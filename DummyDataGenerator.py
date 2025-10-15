@@ -19,7 +19,6 @@ FIELD_TYPES = {
     "Address": lambda: fake.address().replace("\n", ", "),
     "Company": lambda: fake.company(),
     "Age": lambda: random.randint(18, 70),
-    "Salary": lambda: round(random.uniform(30000, 120000), 2),
     "Job Title": lambda: fake.job(),
     "Country": lambda: fake.country(),
     "Date Joined": lambda: fake.date_between(start_date="-5y", end_date="today"),
@@ -28,8 +27,9 @@ FIELD_TYPES = {
     # param-handled types
     "Range (0-10)": None,
     "Comment (Sentiment)": None,
-    "Conditional (Based on Comment Sentiment)": None,
     "Conditional Range (Based on Comment Sentiment)": None,
+    "Constant": None,       # NEW
+    "Custom Enum": None,    # NEW
 }
 
 # --- Comment pools ---
@@ -70,35 +70,22 @@ def _normalize_probs(p):
 
 
 def _apply_trend(base_probs, time_factor, trend_type, strength):
-    """
-    base_probs: (p_pos, p_neu, p_neg)
-    time_factor: 0..1
-    trend_type: "Increasing Positive", "Decreasing Positive", "Cyclical", "Random Fluctuation"
-    strength: 0..1
-    Returns (p_pos, p_neu, p_neg)
-    """
     bp = list(base_probs)
     pos, neu, neg = bp
 
     if trend_type == "Increasing Positive":
-        # Move probability mass toward positive as time increases
         pos = pos + strength * time_factor * (1 - pos)
         neg = neg - strength * time_factor * neg
         neu = 1 - pos - neg
     elif trend_type == "Decreasing Positive":
-        # Opposite: positive declines over time
         pos = pos - strength * time_factor * pos
         neg = neg + strength * time_factor * (1 - neg)
         neu = 1 - pos - neg
     elif trend_type == "Cyclical":
-        # Sinusoidal change of positive mass
-        # time_factor mapped to sin in [-1,1]
         cyc = math.sin(2 * math.pi * time_factor)
-        pos = pos + strength * (cyc * 0.5)  # amplitude scaled
-        # spread remainder
+        pos = pos + strength * (cyc * 0.5)
         pos = _clamp(pos, 0.01, 0.99)
         remain = 1 - pos
-        # preserve relative ratio of neu/neg from base
         base_pair_sum = neu + neg
         if base_pair_sum == 0:
             neu = neg = remain / 2
@@ -106,18 +93,13 @@ def _apply_trend(base_probs, time_factor, trend_type, strength):
             neu = remain * (neu / base_pair_sum)
             neg = remain * (neg / base_pair_sum)
     elif trend_type == "Random Fluctuation":
-        # small random jitter influenced by strength & time (to get more variance further along)
         jitter_pos = random.gauss(0, 0.1 * strength)
         jitter_neu = random.gauss(0, 0.1 * strength)
         jitter_neg = random.gauss(0, 0.1 * strength)
         pos = pos + jitter_pos
         neu = neu + jitter_neu
         neg = neg + jitter_neg
-    else:
-        # no trend
-        pass
 
-    # clamp and normalize
     pos = _clamp(pos, 0.0, 1.0)
     neu = _clamp(neu, 0.0, 1.0)
     neg = _clamp(neg, 0.0, 1.0)
@@ -125,15 +107,39 @@ def _apply_trend(base_probs, time_factor, trend_type, strength):
     return pos, neu, neg
 
 
+def _parse_enum_values(raw: str):
+    """Parse comma-separated enum values; return list of trimmed non-empty strings."""
+    items = [s.strip() for s in raw.split(",")]
+    items = [s for s in items if s != ""]
+    return items
+
+
+def _parse_weights(raw: str, n):
+    """Parse comma-separated weights into list of floats length n; if invalid return None."""
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(",")]
+    try:
+        weights = [float(p) for p in parts]
+    except Exception:
+        return None
+    if len(weights) != n:
+        return None
+    # normalize non-negative
+    weights = [max(0.0, w) for w in weights]
+    if sum(weights) == 0:
+        return None
+    return weights
+
+
 def generate_dummy_data(rows, schema, global_timeline=None):
     """
     Generate dataset:
       - First pass: generate non-comment, non-conditional fields (so date fields exist)
       - Second pass: generate comment fields (trend-aware)
-      - Third pass: evaluate conditional fields & conditional ranges
-    global_timeline: dict with keys {'start_date': date, 'end_date': date} or None
+      - Third pass: evaluate conditional ranges & sequential IDs
     """
-    # PASS 1: produce base rows with everything except comments & conditional fields
+    # PASS 1: base rows (includes Constants & Custom Enums)
     base_rows = []
     for i in range(rows):
         row = {}
@@ -142,7 +148,30 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             ftype = field["type"]
 
             if ftype == "Unique ID (Sequential)":
-                row[fname] = i + 1
+                # sequential handled later to account for pad/start/step per-field
+                continue
+
+            if ftype == "Constant":
+                row[fname] = field.get("value", "")
+                continue
+
+            if ftype == "Custom Enum":
+                # enum generation in pass1 for randomness/cycling easier (we can base on row index)
+                raw_vals = field.get("values_raw", "")
+                vals = _parse_enum_values(raw_vals)
+                if not vals:
+                    row[fname] = None
+                    continue
+                mode = field.get("enum_mode", "Random")
+                weights_raw = field.get("weights_raw", "")
+                weights = _parse_weights(weights_raw, len(vals))
+                if mode == "Cycle":
+                    row[fname] = vals[i % len(vals)]
+                else:  # Random (respect weights if present)
+                    if weights:
+                        row[fname] = random.choices(vals, weights=weights, k=1)[0]
+                    else:
+                        row[fname] = random.choice(vals)
                 continue
 
             if ftype == "Range (0-10)":
@@ -157,7 +186,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 continue
 
             if ftype == "Date Joined":
-                # generator returns a datetime.date, keep as-is
                 gen = FIELD_TYPES.get(ftype)
                 if callable(gen):
                     row[fname] = gen()
@@ -165,8 +193,8 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                     row[fname] = None
                 continue
 
-            # skip comment and conditional fields here (we'll handle later)
-            if ftype in ("Comment (Sentiment)", "Conditional (Based on Comment Sentiment)", "Conditional Range (Based on Comment Sentiment)"):
+            # skip comment and conditional-range types here (we'll handle later)
+            if ftype in ("Comment (Sentiment)", "Conditional Range (Based on Comment Sentiment)"):
                 continue
 
             gen = FIELD_TYPES.get(ftype)
@@ -177,7 +205,9 @@ def generate_dummy_data(rows, schema, global_timeline=None):
 
         base_rows.append(row)
 
-    # Helper: find date ranges for a specific date field across base_rows
+    # PASS 2: comments (trend aware)
+    sentiments_per_row = [dict() for _ in range(rows)]
+
     def _compute_date_range(field_name):
         dates = []
         for r in base_rows:
@@ -185,7 +215,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             if v is None:
                 continue
             try:
-                # Faker's date_between yields a datetime.date, convert to datetime
                 dt = pd.to_datetime(v)
                 dates.append(dt)
             except Exception:
@@ -195,13 +224,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
         min_d = min(dates)
         max_d = max(dates)
         return min_d, max_d
-
-    # PASS 2: generate comment fields (trend aware)
-    # We'll store sentiments per-row to be used later in conditionals
-    sentiments_per_row = [dict() for _ in range(rows)]
-
-    # Precompute any date-ranges for potential date fields referenced by comment trends
-    # But comments may choose different date fields; we'll compute on demand using _compute_date_range.
 
     for i, row in enumerate(base_rows):
         for field in schema:
@@ -215,11 +237,10 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             trend_enabled = field.get("trend_enabled", False)
             trend_type = field.get("trend_type", "Increasing Positive")
             trend_strength = float(field.get("trend_strength", 0.5))
-            timeline_source = field.get("timeline_source", "Global timeline")  # "Global timeline" or "Date field"
+            timeline_source = field.get("timeline_source", "Global timeline")
             date_field_ref = field.get("timeline_date_field", "")
-            base_preset = field.get("base_preset", "Balanced")  # determines base probs
+            base_preset = field.get("base_preset", "Balanced")
 
-            # Base probabilities by preset
             if base_preset == "Balanced":
                 base_prob = (0.34, 0.33, 0.33)
             elif base_preset == "Positive-heavy":
@@ -231,17 +252,14 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             else:
                 base_prob = (0.34, 0.33, 0.33)
 
-            # compute time_factor in [0,1]
             time_factor = 0.0
             if trend_enabled:
                 if timeline_source == "Global timeline" and global_timeline is not None:
-                    # map row index to [0,1] across the global timeline
                     if rows > 1:
                         time_factor = i / (rows - 1)
                     else:
                         time_factor = 0.0
                 elif timeline_source == "Date field" and date_field_ref:
-                    # compute min/max for the referenced date field across dataset
                     min_d, max_d = _compute_date_range(date_field_ref)
                     try:
                         this_dt = row.get(date_field_ref)
@@ -252,19 +270,15 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                             elapsed = (this_dt - min_d).total_seconds()
                             time_factor = _clamp(elapsed / total)
                         else:
-                            # fallback to index mapping
                             time_factor = i / (rows - 1) if rows > 1 else 0.0
                     except Exception:
                         time_factor = i / (rows - 1) if rows > 1 else 0.0
                 else:
-                    # default fallback: index mapping
                     time_factor = i / (rows - 1) if rows > 1 else 0.0
 
-            # Determine sentiment probabilities (either fixed if trend disabled or trend-applied)
             if trend_enabled:
                 p_pos, p_neu, p_neg = _apply_trend(base_prob, time_factor, trend_type, trend_strength)
             else:
-                # If user set explicit "sentiment" choice (Random/Positive/Neutral/Negative), respect that
                 sentiment_choice = field.get("sentiment", "Random")
                 if sentiment_choice == "Random":
                     p_pos, p_neu, p_neg = base_prob
@@ -277,7 +291,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 else:
                     p_pos, p_neu, p_neg = base_prob
 
-            # sample sentiment by probabilities
             r = random.random()
             if r < p_pos:
                 sentiment = "Positive"
@@ -289,31 +302,25 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 sentiment = "Negative"
                 comment_text = random.choice(COMMENTS_NEGATIVE)
 
-            # store
             row[fname] = comment_text
             sentiments_per_row[i][fname] = sentiment
 
-    # PASS 3: conditional fields & conditional ranges
+    # PASS 3: conditional ranges and sequential ids
     final_rows = []
     for i, row in enumerate(base_rows):
-        # for each conditional field type, compute value now
+        # Sequential IDs: any field of that type should be added now
         for field in schema:
             fname = field["name"]
             ftype = field["type"]
 
-            if ftype == "Conditional (Based on Comment Sentiment)":
-                depends_on = field.get("depends_on", "")
-                trigger = field.get("trigger_sentiment", "Negative")
-                true_val = field.get("true_value", "")
-                false_val = field.get("false_value", "")
-
-                actual_sent = sentiments_per_row[i].get(depends_on)
-                if trigger == "Any":
-                    condition_true = actual_sent is not None
-                else:
-                    condition_true = (actual_sent == trigger)
-
-                row[fname] = true_val if condition_true else false_val
+            if ftype == "Unique ID (Sequential)":
+                start = int(field.get("start", 1))
+                step = int(field.get("step", 1))
+                pad_zeros = int(field.get("pad_zeros", 0))
+                # width = digits of start + pad_zeros
+                width = len(str(start)) + max(0, pad_zeros)
+                val = start + i * step
+                row[fname] = str(val).zfill(width)
 
             elif ftype == "Conditional Range (Based on Comment Sentiment)":
                 depends_on = field.get("depends_on", "")
@@ -351,12 +358,12 @@ def generate_dummy_data(rows, schema, global_timeline=None):
 # --- UI ---
 st.set_page_config(page_title="Custom Dummy Data Generator", layout="wide")
 st.title("📊 Custom Dummy Data Generator")
-st.markdown("Generate dummy data. New: comment trend-over-time controls per comment field.")
+st.markdown("Generate dummy data. Added Constant and Custom Enum field types.")
 
 st.sidebar.header("⚙️ Settings")
 rows = st.sidebar.slider("Number of rows", 10, 5000, 100, step=10)
 
-# Global timeline (optional; used if comment trend uses 'Global timeline')
+# Global timeline (optional)
 st.sidebar.subheader("📈 Global timeline (optional)")
 use_global_timeline = st.sidebar.checkbox("Use global timeline mapping (index → dates)", value=False, key="use_global_tl")
 global_timeline = None
@@ -369,7 +376,7 @@ if use_global_timeline:
         global_timeline = {"start_date": pd.to_datetime(gstart), "end_date": pd.to_datetime(gend)}
 
 st.sidebar.subheader("🛠️ Add Custom Fields")
-num_fields = st.sidebar.number_input("Number of fields", 1, 30, 4)
+num_fields = st.sidebar.number_input("Number of fields", 1, 40, 6)
 
 schema = []
 type_options = list(FIELD_TYPES.keys())
@@ -383,7 +390,6 @@ EMOJI = {
     "Address": "🏠",
     "Company": "🏢",
     "Age": "🎂",
-    "Salary": "💰",
     "Job Title": "💼",
     "Country": "🌍",
     "Date Joined": "📅",
@@ -391,12 +397,13 @@ EMOJI = {
     "Custom Number": "🔣",
     "Range (0-10)": "📏",
     "Comment (Sentiment)": "💬",
-    "Conditional (Based on Comment Sentiment)": "🔀",
     "Conditional Range (Based on Comment Sentiment)": "🎯",
+    "Constant": "🔒",
+    "Custom Enum": "🧩",
 }
 
 for i in range(num_fields):
-    with st.sidebar.expander(f"Field {i+1}", expanded=(i < 3)):
+    with st.sidebar.expander(f"Field {i+1}", expanded=(i < 6)):
         col1, col2 = st.columns([2, 2])
         default_name = f"Field{i+1}"
         with col1:
@@ -407,6 +414,28 @@ for i in range(num_fields):
         st.markdown(f"**{EMOJI.get(field_type, '')} {field_name or default_name} — _{field_type}_**")
 
         field_def = {"name": field_name or default_name, "type": field_type, "default_name": default_name}
+
+        # Unique ID (Sequential) options
+        if field_type == "Unique ID (Sequential)":
+            start = st.number_input("Start", value=1, step=1, key=f"seq_start_{i}")
+            step = st.number_input("Step", value=1, step=1, key=f"seq_step_{i}")
+            pad_zeros = st.number_input("Number of zeros (additional)", min_value=0, value=3, step=1, key=f"seq_pad_{i}")
+            st.caption("Width = digits(start) + Number of zeros. Example: start=1, zeros=3 → 0001")
+            field_def.update({"start": int(start), "step": int(step), "pad_zeros": int(pad_zeros)})
+
+        # Constant field
+        if field_type == "Constant":
+            const_val = st.text_input("Constant value (will repeat for every row)", value="", key=f"const_val_{i}")
+            st.caption("The exact value you type here will be used for every generated row.")
+            field_def.update({"value": const_val})
+
+        # Custom Enum field
+        if field_type == "Custom Enum":
+            vals = st.text_area("Enum values (comma-separated)", value="A,B,C", help="Enter values separated by commas, e.g. red, green, blue", key=f"enum_vals_{i}")
+            mode = st.selectbox("Mode", options=["Random", "Cycle"], index=0, key=f"enum_mode_{i}")
+            weights = st.text_input("Optional weights (comma-separated, same length as values) — leave empty for uniform", value="", key=f"enum_weights_{i}")
+            st.caption("Random: picks one value per row at random (weights respected). Cycle: round-robin across rows.")
+            field_def.update({"values_raw": vals, "enum_mode": mode, "weights_raw": weights})
 
         # Range options
         if field_type == "Range (0-10)":
@@ -419,7 +448,7 @@ for i in range(num_fields):
             precision = st.number_input("Precision (if float)", min_value=0, max_value=6, value=2, key=f"prec_{i}")
             field_def.update({"min": min_val, "max": max_val, "float": float_toggle, "precision": precision})
 
-        # Date Joined special handled by generator (no extra UI)
+        # Date Joined note
         if field_type == "Date Joined":
             st.caption("This date field can be used as a timeline source for comment trends.")
 
@@ -433,11 +462,9 @@ for i in range(num_fields):
             field_def["trend_enabled"] = trend_enabled
 
             if trend_enabled:
-                # Timeline source: Global timeline or Date field
                 tl_source = st.selectbox("Timeline source", options=["Global timeline", "Date field"], key=f"tl_src_{i}")
                 field_def["timeline_source"] = tl_source
                 if tl_source == "Date field":
-                    # provide date-field options from schema that are of type "Date Joined"
                     date_field_options = [f["name"] for f in schema if f.get("type") == "Date Joined"]
                     if date_field_options:
                         chosen_df = st.selectbox("Date field to use as timeline", options=date_field_options + ["(enter manually)"], key=f"df_choice_{i}")
@@ -449,40 +476,15 @@ for i in range(num_fields):
                         date_field_ref = st.text_input("Enter date field name to use for timeline", value="", key=f"df_manual_{i}")
                     field_def["timeline_date_field"] = date_field_ref
 
-                # Trend type & strength
                 trend_type = st.selectbox("Trend type", options=["Increasing Positive", "Decreasing Positive", "Cyclical", "Random Fluctuation"], key=f"trend_type_{i}")
                 trend_strength = st.slider("Trend strength", 0.0, 1.0, 0.5, step=0.01, key=f"trend_strength_{i}")
                 field_def["trend_type"] = trend_type
                 field_def["trend_strength"] = float(trend_strength)
 
-                # Base distribution preset
                 base_preset = st.selectbox("Base distribution", options=["Balanced", "Positive-heavy", "Neutral-heavy", "Negative-heavy"], key=f"base_preset_{i}")
                 field_def["base_preset"] = base_preset
 
-        # Conditional string field options
-        if field_type == "Conditional (Based on Comment Sentiment)":
-            comment_field_options = [f["name"] for f in schema if f.get("type") == "Comment (Sentiment)"]
-            if comment_field_options:
-                chosen = st.selectbox("Depends on", options=comment_field_options + ["(enter manually)"], key=f"depends_choice_{i}")
-                if chosen == "(enter manually)":
-                    depends_on = st.text_input("Comment field name", value="", key=f"depends_manual_{i}")
-                else:
-                    depends_on = chosen
-            else:
-                depends_on = st.text_input("Comment field name to depend on", value="", key=f"depends_manual_{i}")
-
-            trigger = st.selectbox("Trigger sentiment", options=["Positive", "Neutral", "Negative", "Any"], index=3, key=f"trigger_{i}")
-            true_val = st.text_input(f"Value if {trigger}", value="TRUE_VALUE", key=f"true_{i}")
-            false_val = st.text_input(f"Value if NOT {trigger}", value="FALSE_VALUE", key=f"false_{i}")
-
-            field_def.update({
-                "depends_on": depends_on,
-                "trigger_sentiment": trigger,
-                "true_value": true_val,
-                "false_value": false_val
-            })
-
-        # Conditional Range options
+        # Conditional Range options (kept)
         if field_type == "Conditional Range (Based on Comment Sentiment)":
             comment_field_options = [f["name"] for f in schema if f.get("type") == "Comment (Sentiment)"]
             if comment_field_options:
@@ -534,7 +536,7 @@ for i in range(num_fields):
                 "float": float_toggle, "precision": precision
             })
 
-        # Append field definition to schema after options are captured
+        # append field to schema
         schema.append(field_def)
 
 # Generate dataset
