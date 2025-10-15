@@ -13,7 +13,9 @@ fake = Faker()
 FIELD_TYPES = {
     "Unique ID (Sequential)": None,  # handled separately
     "Unique ID (UUID)": lambda: str(uuid.uuid4()),
-    "Name": lambda: fake.name(),
+    "Full Name": lambda: fake.name(),         # replaced old "Name"
+    "First Name": lambda: fake.first_name(),  # new
+    "Last Name": lambda: fake.last_name(),    # new
     "Email": lambda: fake.email(),
     "Phone": lambda: fake.phone_number(),
     "Address": lambda: fake.address().replace("\n", ", "),
@@ -21,15 +23,15 @@ FIELD_TYPES = {
     "Age": lambda: random.randint(18, 70),
     "Job Title": lambda: fake.job(),
     "Country": lambda: fake.country(),
-    "Date Joined": lambda: fake.date_between(start_date="-5y", end_date="today"),
+    "Date": lambda: fake.date_between(start_date="-5y", end_date="today"),
     "Custom Text": lambda: fake.word(),
     "Custom Number": lambda: random.randint(1000, 9999),
     # param-handled types
     "Range (0-10)": None,
     "Comment (Sentiment)": None,
     "Conditional Range (Based on Comment Sentiment)": None,
-    "Constant": None,       # NEW
-    "Custom Enum": None,    # NEW
+    "Constant": None,
+    "Custom Enum": None,
 }
 
 # --- Comment pools ---
@@ -156,7 +158,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 continue
 
             if ftype == "Custom Enum":
-                # enum generation in pass1 for randomness/cycling easier (we can base on row index)
                 raw_vals = field.get("values_raw", "")
                 vals = _parse_enum_values(raw_vals)
                 if not vals:
@@ -358,7 +359,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
 # --- UI ---
 st.set_page_config(page_title="Custom Dummy Data Generator", layout="wide")
 st.title("📊 Custom Dummy Data Generator")
-st.markdown("Generate dummy data. Added Constant and Custom Enum field types.")
+st.markdown("Generate dummy data. Full/First/Last name fields added; everything else preserved.")
 
 st.sidebar.header("⚙️ Settings")
 rows = st.sidebar.slider("Number of rows", 10, 5000, 100, step=10)
@@ -384,7 +385,9 @@ type_options = list(FIELD_TYPES.keys())
 EMOJI = {
     "Unique ID (Sequential)": "🔢",
     "Unique ID (UUID)": "🆔",
-    "Name": "👤",
+    "Full Name": "👤",
+    "First Name": "🙂",
+    "Last Name": "🔖",
     "Email": "✉️",
     "Phone": "📞",
     "Address": "🏠",
