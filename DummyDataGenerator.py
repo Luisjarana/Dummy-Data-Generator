@@ -13,9 +13,9 @@ fake = Faker()
 FIELD_TYPES = {
     "Unique ID (Sequential)": None,  # handled separately
     "Unique ID (UUID)": lambda: str(uuid.uuid4()),
-    "Full Name": lambda: fake.name(),         # replaced old "Name"
-    "First Name": lambda: fake.first_name(),  # new
-    "Last Name": lambda: fake.last_name(),    # new
+    "Full Name": lambda: fake.name(),
+    "First Name": lambda: fake.first_name(),
+    "Last Name": lambda: fake.last_name(),
     "Email": lambda: fake.email(),
     "Phone": lambda: fake.phone_number(),
     "Address": lambda: fake.address().replace("\n", ", "),
@@ -24,6 +24,7 @@ FIELD_TYPES = {
     "Job Title": lambda: fake.job(),
     "Country": lambda: fake.country(),
     "Date": lambda: fake.date_between(start_date="-5y", end_date="today"),
+    "Date (Sequential)": None,  # handled separately
     "Custom Text": lambda: fake.word(),
     "Custom Number": lambda: random.randint(1000, 9999),
     # param-handled types
@@ -134,6 +135,38 @@ def _parse_weights(raw: str, n):
     return weights
 
 
+def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
+    """
+    Generate sequential dates allowing multiple entries per date.
+    entries_per_date: max number of rows that can share the same date
+    """
+    dates = []
+    current_date = start_date
+    date_list = []
+    
+    # Calculate how many unique dates we need
+    num_unique_dates = math.ceil(rows / entries_per_date)
+    
+    # Calculate the increment to spread dates across the range
+    if num_unique_dates <= 1:
+        date_list = [start_date] * rows
+    else:
+        total_days = (end_date - start_date).days
+        day_increment = max(1, total_days // (num_unique_dates - 1))
+        
+        for i in range(num_unique_dates):
+            date = start_date + timedelta(days=min(i * day_increment, total_days))
+            # Add this date 'entries_per_date' times (or remaining rows)
+            for _ in range(min(entries_per_date, rows - len(date_list))):
+                date_list.append(date)
+                if len(date_list) >= rows:
+                    break
+            if len(date_list) >= rows:
+                break
+    
+    return date_list[:rows]
+
+
 def generate_dummy_data(rows, schema, global_timeline=None):
     """
     Generate dataset:
@@ -151,6 +184,10 @@ def generate_dummy_data(rows, schema, global_timeline=None):
 
             if ftype == "Unique ID (Sequential)":
                 # sequential handled later to account for pad/start/step per-field
+                continue
+
+            if ftype == "Date (Sequential)":
+                # sequential dates handled later
                 continue
 
             if ftype == "Constant":
@@ -186,7 +223,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                     row[fname] = random.randint(min_v, max_v)
                 continue
 
-            if ftype == "Date Joined":
+            if ftype == "Date":
                 gen = FIELD_TYPES.get(ftype)
                 if callable(gen):
                     row[fname] = gen()
@@ -205,6 +242,19 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 row[fname] = None
 
         base_rows.append(row)
+
+    # Generate sequential dates for all Date (Sequential) fields
+    for field in schema:
+        if field["type"] == "Date (Sequential)":
+            fname = field["name"]
+            start_date = pd.to_datetime(field.get("seq_start_date"))
+            end_date = pd.to_datetime(field.get("seq_end_date"))
+            entries_per_date = int(field.get("entries_per_date", 1))
+            
+            date_list = _generate_sequential_dates(rows, start_date, end_date, entries_per_date)
+            
+            for i, row in enumerate(base_rows):
+                row[fname] = date_list[i]
 
     # PASS 2: comments (trend aware)
     sentiments_per_row = [dict() for _ in range(rows)]
@@ -359,7 +409,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
 # --- UI ---
 st.set_page_config(page_title="Custom Dummy Data Generator", layout="wide")
 st.title("📊 Custom Dummy Data Generator")
-st.markdown("Generate dummy data. Full/First/Last name fields added; everything else preserved.")
+st.markdown("Generate dummy data with sequential dates allowing multiple entries per date.")
 
 st.sidebar.header("⚙️ Settings")
 rows = st.sidebar.slider("Number of rows", 10, 5000, 100, step=10)
@@ -395,7 +445,8 @@ EMOJI = {
     "Age": "🎂",
     "Job Title": "💼",
     "Country": "🌍",
-    "Date Joined": "📅",
+    "Date": "📅",
+    "Date (Sequential)": "📆",
     "Custom Text": "📝",
     "Custom Number": "🔣",
     "Range (0-10)": "📏",
@@ -426,6 +477,18 @@ for i in range(num_fields):
             st.caption("Width = digits(start) + Number of zeros. Example: start=1, zeros=3 → 0001")
             field_def.update({"start": int(start), "step": int(step), "pad_zeros": int(pad_zeros)})
 
+        # Date (Sequential) options
+        if field_type == "Date (Sequential)":
+            seq_start_date = st.date_input("Start date", value=datetime.now().date() - timedelta(days=365), key=f"seq_date_start_{i}")
+            seq_end_date = st.date_input("End date", value=datetime.now().date(), key=f"seq_date_end_{i}")
+            entries_per_date = st.number_input("Max entries per date", min_value=1, value=1, step=1, key=f"entries_per_date_{i}")
+            st.caption("Dates will be sequential. Multiple rows can share the same date up to the max specified.")
+            field_def.update({
+                "seq_start_date": seq_start_date,
+                "seq_end_date": seq_end_date,
+                "entries_per_date": int(entries_per_date)
+            })
+
         # Constant field
         if field_type == "Constant":
             const_val = st.text_input("Constant value (will repeat for every row)", value="", key=f"const_val_{i}")
@@ -451,9 +514,9 @@ for i in range(num_fields):
             precision = st.number_input("Precision (if float)", min_value=0, max_value=6, value=2, key=f"prec_{i}")
             field_def.update({"min": min_val, "max": max_val, "float": float_toggle, "precision": precision})
 
-        # Date Joined note
-        if field_type == "Date Joined":
-            st.caption("This date field can be used as a timeline source for comment trends.")
+        # Date note
+        if field_type == "Date":
+            st.caption("This generates random dates. Use 'Date (Sequential)' for ordered dates.")
 
         # Comment options with trend controls
         if field_type == "Comment (Sentiment)":
@@ -468,7 +531,7 @@ for i in range(num_fields):
                 tl_source = st.selectbox("Timeline source", options=["Global timeline", "Date field"], key=f"tl_src_{i}")
                 field_def["timeline_source"] = tl_source
                 if tl_source == "Date field":
-                    date_field_options = [f["name"] for f in schema if f.get("type") == "Date Joined"]
+                    date_field_options = [f["name"] for f in schema if f.get("type") in ["Date", "Date (Sequential)"]]
                     if date_field_options:
                         chosen_df = st.selectbox("Date field to use as timeline", options=date_field_options + ["(enter manually)"], key=f"df_choice_{i}")
                         if chosen_df == "(enter manually)":
@@ -487,7 +550,7 @@ for i in range(num_fields):
                 base_preset = st.selectbox("Base distribution", options=["Balanced", "Positive-heavy", "Neutral-heavy", "Negative-heavy"], key=f"base_preset_{i}")
                 field_def["base_preset"] = base_preset
 
-        # Conditional Range options (kept)
+        # Conditional Range options
         if field_type == "Conditional Range (Based on Comment Sentiment)":
             comment_field_options = [f["name"] for f in schema if f.get("type") == "Comment (Sentiment)"]
             if comment_field_options:
