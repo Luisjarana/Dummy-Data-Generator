@@ -143,17 +143,17 @@ def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
     dates = []
     current_date = start_date
     date_list = []
-    
+
     # Calculate how many unique dates we need
     num_unique_dates = math.ceil(rows / entries_per_date)
-    
+
     # Calculate the increment to spread dates across the range
     if num_unique_dates <= 1:
         date_list = [start_date] * rows
     else:
         total_days = (end_date - start_date).days
         day_increment = max(1, total_days // (num_unique_dates - 1))
-        
+
         for i in range(num_unique_dates):
             date = start_date + timedelta(days=min(i * day_increment, total_days))
             # Add this date 'entries_per_date' times (or remaining rows)
@@ -163,7 +163,7 @@ def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
                     break
             if len(date_list) >= rows:
                 break
-    
+
     return date_list[:rows]
 
 
@@ -250,9 +250,9 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             start_date = pd.to_datetime(field.get("seq_start_date"))
             end_date = pd.to_datetime(field.get("seq_end_date"))
             entries_per_date = int(field.get("entries_per_date", 1))
-            
+
             date_list = _generate_sequential_dates(rows, start_date, end_date, entries_per_date)
-            
+
             for i, row in enumerate(base_rows):
                 row[fname] = date_list[i]
 
@@ -412,7 +412,7 @@ st.title("📊 Custom Dummy Data Generator")
 st.markdown("Generate dummy data with sequential dates allowing multiple entries per date.")
 
 st.sidebar.header("⚙️ Settings")
-rows = st.sidebar.slider("Number of rows", 10, 5000, 100, step=10)
+rows = st.sidebar.slider("Number of rows", 10, 100000, 100, step=10)
 
 # Global timeline (optional)
 st.sidebar.subheader("📈 Global timeline (optional)")
@@ -427,7 +427,8 @@ if use_global_timeline:
         global_timeline = {"start_date": pd.to_datetime(gstart), "end_date": pd.to_datetime(gend)}
 
 st.sidebar.subheader("🛠️ Add Custom Fields")
-num_fields = st.sidebar.number_input("Number of fields", 1, 40, 6)
+# default number of fields changed to 4 (as requested)
+num_fields = st.sidebar.number_input("Number of fields", 1, 40, 4)
 
 schema = []
 type_options = list(FIELD_TYPES.keys())
@@ -436,8 +437,8 @@ EMOJI = {
     "Unique ID (Sequential)": "🔢",
     "Unique ID (UUID)": "🆔",
     "Full Name": "👤",
-    "First Name": "🙂",
-    "Last Name": "🔖",
+    "First Name": "👤",
+    "Last Name": "👤",
     "Email": "✉️",
     "Phone": "📞",
     "Address": "🏠",
@@ -456,14 +457,33 @@ EMOJI = {
     "Custom Enum": "🧩",
 }
 
+# defaults for the first four fields per user's request
+DEFAULT_FIELD_ORDER = [
+    ("First name", "First Name"),
+    ("Last name", "Last Name"),
+    ("Comment", "Comment (Sentiment)"),
+    ("Conditional Range", "Conditional Range (Based on Comment Sentiment)"),
+]
+
 for i in range(num_fields):
     with st.sidebar.expander(f"Field {i+1}", expanded=(i < 6)):
         col1, col2 = st.columns([2, 2])
-        default_name = f"Field{i+1}"
+        # choose default label/type for the first 4 fields
+        if i < len(DEFAULT_FIELD_ORDER):
+            default_name, default_type = DEFAULT_FIELD_ORDER[i]
+        else:
+            default_name, default_type = f"Field{i+1}", None
+
         with col1:
             field_name = st.text_input("Name", value=default_name, key=f"name_{i}")
+        # determine default type index for selectbox
+        if default_type and default_type in type_options:
+            default_type_index = type_options.index(default_type)
+        else:
+            default_type_index = min(i, len(type_options) - 1)
+
         with col2:
-            field_type = st.selectbox("Type", options=type_options, index=min(i, len(type_options) - 1), key=f"type_{i}")
+            field_type = st.selectbox("Type", options=type_options, index=default_type_index, key=f"type_{i}")
 
         st.markdown(f"**{EMOJI.get(field_type, '')} {field_name or default_name} — _{field_type}_**")
 
@@ -552,9 +572,12 @@ for i in range(num_fields):
 
         # Conditional Range options
         if field_type == "Conditional Range (Based on Comment Sentiment)":
+            # pick available comment fields already defined in schema (so default can be the immediate comment field)
             comment_field_options = [f["name"] for f in schema if f.get("type") == "Comment (Sentiment)"]
             if comment_field_options:
-                chosen = st.selectbox("Depends on", options=comment_field_options + ["(enter manually)"], key=f"cr_dep_choice_{i}")
+                # default to first comment field found
+                default_index = 0
+                chosen = st.selectbox("Depends on", options=comment_field_options + ["(enter manually)"], index=default_index, key=f"cr_dep_choice_{i}")
                 if chosen == "(enter manually)":
                     depends_on = st.text_input("Enter comment field name", value="", key=f"cr_dep_manual_{i}")
                 else:
@@ -565,23 +588,23 @@ for i in range(num_fields):
             st.markdown("**Range when comment is Positive**")
             pcol1, pcol2 = st.columns([1, 1])
             with pcol1:
-                pmin = st.number_input("Pos min", value=7, key=f"pos_min_{i}")
+                pmin = st.number_input("Pos min", value=9, key=f"pos_min_{i}")
             with pcol2:
                 pmax = st.number_input("Pos max", value=10, key=f"pos_max_{i}")
 
             st.markdown("**Range when comment is Neutral**")
             ncol1, ncol2 = st.columns([1, 1])
             with ncol1:
-                nmin = st.number_input("Neu min", value=4, key=f"neu_min_{i}")
+                nmin = st.number_input("Neu min", value=7, key=f"neu_min_{i}")
             with ncol2:
-                nmax = st.number_input("Neu max", value=6, key=f"neu_max_{i}")
+                nmax = st.number_input("Neu max", value=8, key=f"neu_max_{i}")
 
             st.markdown("**Range when comment is Negative**")
             negcol1, negcol2 = st.columns([1, 1])
             with negcol1:
                 negmin = st.number_input("Neg min", value=0, key=f"neg_min_{i}")
             with negcol2:
-                negmax = st.number_input("Neg max", value=3, key=f"neg_max_{i}")
+                negmax = st.number_input("Neg max", value=6, key=f"neg_max_{i}")
 
             st.markdown("**Range when comment sentiment unknown / Any**")
             acol1, acol2 = st.columns([1, 1])
@@ -625,4 +648,4 @@ st.download_button(
 )
 
 st.markdown("---")
-st.caption("Made with ❤️ using Streamlit & Faker")
+st.caption("Made using Streamlit & Faker")
