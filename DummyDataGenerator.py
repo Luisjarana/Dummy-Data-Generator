@@ -462,7 +462,7 @@ DEFAULT_FIELD_ORDER = [
     ("First name", "First Name"),
     ("Last name", "Last Name"),
     ("Comment", "Comment (Sentiment)"),
-    ("Conditional Range", "Conditional Range (Based on Comment Sentiment)"),
+    ("LTR", "Conditional Range (Based on Comment Sentiment)"),
 ]
 
 for i in range(num_fields):
