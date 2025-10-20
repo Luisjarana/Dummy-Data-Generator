@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 from faker import Faker
@@ -111,10 +112,13 @@ def _apply_trend(base_probs, time_factor, trend_type, strength):
 
 
 def _parse_enum_values(raw: str):
-    """Parse comma-separated enum values; return list of trimmed non-empty strings."""
-    items = [s.strip() for s in raw.split(",")]
-    items = [s for s in items if s != ""]
-    return items
+    """Parse comma or pipe-separated enum values; return list of trimmed non-empty strings."""
+    if not raw:
+        return []
+    # split by comma or pipe
+    parts = re.split(r"[,\|]+", raw)
+    parts = [p.strip() for p in parts if p.strip() != ""]
+    return parts
 
 
 def _parse_weights(raw: str, n):
@@ -427,8 +431,14 @@ if use_global_timeline:
         global_timeline = {"start_date": pd.to_datetime(gstart), "end_date": pd.to_datetime(gend)}
 
 st.sidebar.subheader("🛠️ Add Custom Fields")
-# default number of fields changed to 4 (as requested)
-num_fields = st.sidebar.number_input("Number of fields", 1, 40, 4)
+
+# QUICK FIELD PARSER (new)
+st.sidebar.markdown("**Quick: paste fields (comma or newline separated)**")
+st.sidebar.caption("Suffixes supported: _cmt, _scale11, _enum, _yn. Optional enum values with parentheses or '='. e.g. color_enum(red,green,blue)")
+quick_fields_raw = st.sidebar.text_area("Quick fields", value="", height=120, key="quick_fields")
+
+# fallback manual field controls
+num_fields = st.sidebar.number_input("Number of fields (manual mode)", 1, 40, 4)
 
 schema = []
 type_options = list(FIELD_TYPES.keys())
@@ -457,7 +467,6 @@ EMOJI = {
     "Custom Enum": "🧩",
 }
 
-# defaults for the first four fields per user's request
 DEFAULT_FIELD_ORDER = [
     ("First name", "First Name"),
     ("Last name", "Last Name"),
@@ -465,168 +474,222 @@ DEFAULT_FIELD_ORDER = [
     ("LTR", "Conditional Range (Based on Comment Sentiment)"),
 ]
 
-for i in range(num_fields):
-    with st.sidebar.expander(f"Field {i+1}", expanded=(i < 6)):
-        col1, col2 = st.columns([2, 2])
-        # choose default label/type for the first 4 fields
-        if i < len(DEFAULT_FIELD_ORDER):
-            default_name, default_type = DEFAULT_FIELD_ORDER[i]
-        else:
-            default_name, default_type = f"Field{i+1}", None
 
-        with col1:
-            field_name = st.text_input("Name", value=default_name, key=f"name_{i}")
-        # determine default type index for selectbox
-        if default_type and default_type in type_options:
-            default_type_index = type_options.index(default_type)
-        else:
-            default_type_index = min(i, len(type_options) - 1)
-
-        with col2:
-            field_type = st.selectbox("Type", options=type_options, index=default_type_index, key=f"type_{i}")
-
-        st.markdown(f"**{EMOJI.get(field_type, '')} {field_name or default_name} — _{field_type}_**")
-
-        field_def = {"name": field_name or default_name, "type": field_type, "default_name": default_name}
-
-        # Unique ID (Sequential) options
-        if field_type == "Unique ID (Sequential)":
-            start = st.number_input("Start", value=1, step=1, key=f"seq_start_{i}")
-            step = st.number_input("Step", value=1, step=1, key=f"seq_step_{i}")
-            pad_zeros = st.number_input("Number of zeros (additional)", min_value=0, value=3, step=1, key=f"seq_pad_{i}")
-            st.caption("Width = digits(start) + Number of zeros. Example: start=1, zeros=3 → 0001")
-            field_def.update({"start": int(start), "step": int(step), "pad_zeros": int(pad_zeros)})
-
-        # Date (Sequential) options
-        if field_type == "Date (Sequential)":
-            seq_start_date = st.date_input("Start date", value=datetime.now().date() - timedelta(days=365), key=f"seq_date_start_{i}")
-            seq_end_date = st.date_input("End date", value=datetime.now().date(), key=f"seq_date_end_{i}")
-            entries_per_date = st.number_input("Max entries per date", min_value=1, value=1, step=1, key=f"entries_per_date_{i}")
-            st.caption("Dates will be sequential. Multiple rows can share the same date up to the max specified.")
-            field_def.update({
-                "seq_start_date": seq_start_date,
-                "seq_end_date": seq_end_date,
-                "entries_per_date": int(entries_per_date)
-            })
-
-        # Constant field
-        if field_type == "Constant":
-            const_val = st.text_input("Constant value (will repeat for every row)", value="", key=f"const_val_{i}")
-            st.caption("The exact value you type here will be used for every generated row.")
-            field_def.update({"value": const_val})
-
-        # Custom Enum field
-        if field_type == "Custom Enum":
-            vals = st.text_area("Enum values (comma-separated)", value="A,B,C", help="Enter values separated by commas, e.g. red, green, blue", key=f"enum_vals_{i}")
-            mode = st.selectbox("Mode", options=["Random", "Cycle"], index=0, key=f"enum_mode_{i}")
-            weights = st.text_input("Optional weights (comma-separated, same length as values) — leave empty for uniform", value="", key=f"enum_weights_{i}")
-            st.caption("Random: picks one value per row at random (weights respected). Cycle: round-robin across rows.")
-            field_def.update({"values_raw": vals, "enum_mode": mode, "weights_raw": weights})
-
-        # Range options
-        if field_type == "Range (0-10)":
-            rcol1, rcol2 = st.columns([1, 1])
-            with rcol1:
-                min_val = st.number_input("Min", value=0, key=f"min_{i}")
-            with rcol2:
-                max_val = st.number_input("Max", value=10, key=f"max_{i}")
-            float_toggle = st.checkbox("Float output?", value=False, key=f"float_{i}")
-            precision = st.number_input("Precision (if float)", min_value=0, max_value=6, value=2, key=f"prec_{i}")
-            field_def.update({"min": min_val, "max": max_val, "float": float_toggle, "precision": precision})
-
-        # Date note
-        if field_type == "Date":
-            st.caption("This generates random dates. Use 'Date (Sequential)' for ordered dates.")
-
-        # Comment options with trend controls
-        if field_type == "Comment (Sentiment)":
-            sentiment = st.selectbox("Sentiment (override)", options=["Random", "Positive", "Neutral", "Negative"], index=0, key=f"sentiment_{i}")
-            field_def["sentiment"] = sentiment
-
-            st.markdown("**Trend over time**")
-            trend_enabled = st.checkbox("Enable trend for this comment field?", value=False, key=f"trend_enabled_{i}")
-            field_def["trend_enabled"] = trend_enabled
-
-            if trend_enabled:
-                tl_source = st.selectbox("Timeline source", options=["Global timeline", "Date field"], key=f"tl_src_{i}")
-                field_def["timeline_source"] = tl_source
-                if tl_source == "Date field":
-                    date_field_options = [f["name"] for f in schema if f.get("type") in ["Date", "Date (Sequential)"]]
-                    if date_field_options:
-                        chosen_df = st.selectbox("Date field to use as timeline", options=date_field_options + ["(enter manually)"], key=f"df_choice_{i}")
-                        if chosen_df == "(enter manually)":
-                            date_field_ref = st.text_input("Enter date field name", value="", key=f"df_manual_{i}")
-                        else:
-                            date_field_ref = chosen_df
-                    else:
-                        date_field_ref = st.text_input("Enter date field name to use for timeline", value="", key=f"df_manual_{i}")
-                    field_def["timeline_date_field"] = date_field_ref
-
-                trend_type = st.selectbox("Trend type", options=["Increasing Positive", "Decreasing Positive", "Cyclical", "Random Fluctuation"], key=f"trend_type_{i}")
-                trend_strength = st.slider("Trend strength", 0.0, 1.0, 0.5, step=0.01, key=f"trend_strength_{i}")
-                field_def["trend_type"] = trend_type
-                field_def["trend_strength"] = float(trend_strength)
-
-                base_preset = st.selectbox("Base distribution", options=["Balanced", "Positive-heavy", "Neutral-heavy", "Negative-heavy"], key=f"base_preset_{i}")
-                field_def["base_preset"] = base_preset
-
-        # Conditional Range options
-        if field_type == "Conditional Range (Based on Comment Sentiment)":
-            # pick available comment fields already defined in schema (so default can be the immediate comment field)
-            comment_field_options = [f["name"] for f in schema if f.get("type") == "Comment (Sentiment)"]
-            if comment_field_options:
-                # default to first comment field found
-                default_index = 0
-                chosen = st.selectbox("Depends on", options=comment_field_options + ["(enter manually)"], index=default_index, key=f"cr_dep_choice_{i}")
-                if chosen == "(enter manually)":
-                    depends_on = st.text_input("Enter comment field name", value="", key=f"cr_dep_manual_{i}")
-                else:
-                    depends_on = chosen
+def parse_quick_fields(raw_text):
+    """
+    Parse user quick fields text => schema list.
+    Recognized suffixes: _cmt, _scale11, _enum, _yn
+    Optional enum values: field_enum(val1,val2) or field_enum=val1,val2
+    """
+    parsed = []
+    if not raw_text:
+        return parsed
+    parts = re.split(r"[,\n\r]+", raw_text)
+    for p in parts:
+        token = p.strip()
+        if not token:
+            continue
+        m = re.match(r'^(?P<name>.+?)_(?P<suffix>cmt|scale11|enum|yn)(?:\((?P<vals>[^)]+)\))?(?:=(?P<eqvals>.+))?$', token, flags=re.I)
+        if m:
+            name = m.group("name").strip()
+            suffix = m.group("suffix").lower()
+            vals_raw = m.group("vals") or m.group("eqvals") or ""
+            # normalize name: if empty use token
+            if name == "":
+                name = token
+            # map suffix -> field_def
+            if suffix == "cmt":
+                fd = {"name": name, "type": "Comment (Sentiment)", "sentiment": "Random", "trend_enabled": False, "trend_type": "Increasing Positive", "trend_strength": 0.5, "base_preset": "Balanced", "timeline_source": "Global timeline", "timeline_date_field": ""}
+            elif suffix == "scale11":
+                fd = {"name": name, "type": "Range (0-10)", "min": 0, "max": 10, "float": False, "precision": 0}
+            elif suffix == "enum":
+                # parse provided values, or fallback to A,B,C
+                vals = _parse_enum_values(vals_raw) if vals_raw else []
+                if not vals:
+                    vals = ["A", "B", "C"]
+                fd = {"name": name, "type": "Custom Enum", "values_raw": ",".join(vals), "enum_mode": "Random", "weights_raw": ""}
+            elif suffix == "yn":
+                fd = {"name": name, "type": "Custom Enum", "values_raw": "Yes,No", "enum_mode": "Random", "weights_raw": ""}
             else:
-                depends_on = st.text_input("Comment field name to depend on", value="", key=f"cr_dep_manual_{i}")
+                fd = {"name": name, "type": "Custom Text"}
+        else:
+            # no recognized suffix → treat as Custom Text
+            continue
+        parsed.append(fd)
+    return parsed
 
-            st.markdown("**Range when comment is Positive**")
-            pcol1, pcol2 = st.columns([1, 1])
-            with pcol1:
-                pmin = st.number_input("Pos min", value=9, key=f"pos_min_{i}")
-            with pcol2:
-                pmax = st.number_input("Pos max", value=10, key=f"pos_max_{i}")
 
-            st.markdown("**Range when comment is Neutral**")
-            ncol1, ncol2 = st.columns([1, 1])
-            with ncol1:
-                nmin = st.number_input("Neu min", value=7, key=f"neu_min_{i}")
-            with ncol2:
-                nmax = st.number_input("Neu max", value=8, key=f"neu_max_{i}")
+# If user provided quick fields, use parsed schema, otherwise use manual expanders
+if quick_fields_raw and quick_fields_raw.strip():
+    schema = parse_quick_fields(quick_fields_raw)
+    st.sidebar.success(f"Parsed {len(schema)} field(s) from quick input.")
+    # show small preview of parsed fields
+    for f in schema:
+        st.sidebar.markdown(f"- **{f['name']}** — _{f['type']}_")
+else:
+    # manual field expanders (keeps prior behavior)
+    for i in range(num_fields):
+        with st.sidebar.expander(f"Field {i+1}", expanded=(i < 6)):
+            col1, col2 = st.columns([2, 2])
+            # choose default label/type for the first 4 fields
+            if i < len(DEFAULT_FIELD_ORDER):
+                default_name, default_type = DEFAULT_FIELD_ORDER[i]
+            else:
+                default_name, default_type = f"Field{i+1}", None
 
-            st.markdown("**Range when comment is Negative**")
-            negcol1, negcol2 = st.columns([1, 1])
-            with negcol1:
-                negmin = st.number_input("Neg min", value=0, key=f"neg_min_{i}")
-            with negcol2:
-                negmax = st.number_input("Neg max", value=6, key=f"neg_max_{i}")
+            with col1:
+                field_name = st.text_input("Name", value=default_name, key=f"name_{i}")
+            # determine default type index for selectbox
+            if default_type and default_type in type_options:
+                default_type_index = type_options.index(default_type)
+            else:
+                default_type_index = min(i, len(type_options) - 1)
 
-            st.markdown("**Range when comment sentiment unknown / Any**")
-            acol1, acol2 = st.columns([1, 1])
-            with acol1:
-                amin = st.number_input("Any min", value=0, key=f"any_min_{i}")
-            with acol2:
-                amax = st.number_input("Any max", value=10, key=f"any_max_{i}")
+            with col2:
+                field_type = st.selectbox("Type", options=type_options, index=default_type_index, key=f"type_{i}")
 
-            float_toggle = st.checkbox("Float output?", value=False, key=f"cr_float_{i}")
-            precision = st.number_input("Precision (if float)", min_value=0, max_value=6, value=2, key=f"cr_prec_{i}")
+            st.markdown(f"**{EMOJI.get(field_type, '')} {field_name or default_name} — _{field_type}_**")
 
-            field_def.update({
-                "depends_on": depends_on,
-                "positive_min": pmin, "positive_max": pmax,
-                "neutral_min": nmin, "neutral_max": nmax,
-                "negative_min": negmin, "negative_max": negmax,
-                "any_min": amin, "any_max": amax,
-                "float": float_toggle, "precision": precision
-            })
+            field_def = {"name": field_name or default_name, "type": field_type, "default_name": default_name}
 
-        # append field to schema
-        schema.append(field_def)
+            # Unique ID (Sequential) options
+            if field_type == "Unique ID (Sequential)":
+                start = st.number_input("Start", value=1, step=1, key=f"seq_start_{i}")
+                step = st.number_input("Step", value=1, step=1, key=f"seq_step_{i}")
+                pad_zeros = st.number_input("Number of zeros (additional)", min_value=0, value=3, step=1, key=f"seq_pad_{i}")
+                st.caption("Width = digits(start) + Number of zeros. Example: start=1, zeros=3 → 0001")
+                field_def.update({"start": int(start), "step": int(step), "pad_zeros": int(pad_zeros)})
+
+            # Date (Sequential) options
+            if field_type == "Date (Sequential)":
+                seq_start_date = st.date_input("Start date", value=datetime.now().date() - timedelta(days=365), key=f"seq_date_start_{i}")
+                seq_end_date = st.date_input("End date", value=datetime.now().date(), key=f"seq_date_end_{i}")
+                entries_per_date = st.number_input("Max entries per date", min_value=1, value=1, step=1, key=f"entries_per_date_{i}")
+                st.caption("Dates will be sequential. Multiple rows can share the same date up to the max specified.")
+                field_def.update({
+                    "seq_start_date": seq_start_date,
+                    "seq_end_date": seq_end_date,
+                    "entries_per_date": int(entries_per_date)
+                })
+
+            # Constant field
+            if field_type == "Constant":
+                const_val = st.text_input("Constant value (will repeat for every row)", value="", key=f"const_val_{i}")
+                st.caption("The exact value you type here will be used for every generated row.")
+                field_def.update({"value": const_val})
+
+            # Custom Enum field
+            if field_type == "Custom Enum":
+                vals = st.text_area("Enum values (comma-separated)", value="A,B,C", help="Enter values separated by commas, e.g. red, green, blue", key=f"enum_vals_{i}")
+                mode = st.selectbox("Mode", options=["Random", "Cycle"], index=0, key=f"enum_mode_{i}")
+                weights = st.text_input("Optional weights (comma-separated, same length as values) — leave empty for uniform", value="", key=f"enum_weights_{i}")
+                st.caption("Random: picks one value per row at random (weights respected). Cycle: round-robin across rows.")
+                field_def.update({"values_raw": vals, "enum_mode": mode, "weights_raw": weights})
+
+            # Range options
+            if field_type == "Range (0-10)":
+                rcol1, rcol2 = st.columns([1, 1])
+                with rcol1:
+                    min_val = st.number_input("Min", value=0, key=f"min_{i}")
+                with rcol2:
+                    max_val = st.number_input("Max", value=10, key=f"max_{i}")
+                float_toggle = st.checkbox("Float output?", value=False, key=f"float_{i}")
+                precision = st.number_input("Precision (if float)", min_value=0, max_value=6, value=2, key=f"prec_{i}")
+                field_def.update({"min": min_val, "max": max_val, "float": float_toggle, "precision": precision})
+
+            # Date note
+            if field_type == "Date":
+                st.caption("This generates random dates. Use 'Date (Sequential)' for ordered dates.")
+
+            # Comment options with trend controls
+            if field_type == "Comment (Sentiment)":
+                sentiment = st.selectbox("Sentiment (override)", options=["Random", "Positive", "Neutral", "Negative"], index=0, key=f"sentiment_{i}")
+                field_def["sentiment"] = sentiment
+
+                st.markdown("**Trend over time**")
+                trend_enabled = st.checkbox("Enable trend for this comment field?", value=False, key=f"trend_enabled_{i}")
+                field_def["trend_enabled"] = trend_enabled
+
+                if trend_enabled:
+                    tl_source = st.selectbox("Timeline source", options=["Global timeline", "Date field"], key=f"tl_src_{i}")
+                    field_def["timeline_source"] = tl_source
+                    if tl_source == "Date field":
+                        date_field_options = [f["name"] for f in schema if f.get("type") in ["Date", "Date (Sequential)"]]
+                        if date_field_options:
+                            chosen_df = st.selectbox("Date field to use as timeline", options=date_field_options + ["(enter manually)"], key=f"df_choice_{i}")
+                            if chosen_df == "(enter manually)":
+                                date_field_ref = st.text_input("Enter date field name", value="", key=f"df_manual_{i}")
+                            else:
+                                date_field_ref = chosen_df
+                        else:
+                            date_field_ref = st.text_input("Enter date field name to use for timeline", value="", key=f"df_manual_{i}")
+                        field_def["timeline_date_field"] = date_field_ref
+
+                    trend_type = st.selectbox("Trend type", options=["Increasing Positive", "Decreasing Positive", "Cyclical", "Random Fluctuation"], key=f"trend_type_{i}")
+                    trend_strength = st.slider("Trend strength", 0.0, 1.0, 0.5, step=0.01, key=f"trend_strength_{i}")
+                    field_def["trend_type"] = trend_type
+                    field_def["trend_strength"] = float(trend_strength)
+
+                    base_preset = st.selectbox("Base distribution", options=["Balanced", "Positive-heavy", "Neutral-heavy", "Negative-heavy"], key=f"base_preset_{i}")
+                    field_def["base_preset"] = base_preset
+
+            # Conditional Range options
+            if field_type == "Conditional Range (Based on Comment Sentiment)":
+                # pick available comment fields already defined in schema (so default can be the immediate comment field)
+                comment_field_options = [f["name"] for f in schema if f.get("type") == "Comment (Sentiment)"]
+                if comment_field_options:
+                    # default to first comment field found
+                    default_index = 0
+                    chosen = st.selectbox("Depends on", options=comment_field_options + ["(enter manually)"], index=default_index, key=f"cr_dep_choice_{i}")
+                    if chosen == "(enter manually)":
+                        depends_on = st.text_input("Enter comment field name", value="", key=f"cr_dep_manual_{i}")
+                    else:
+                        depends_on = chosen
+                else:
+                    depends_on = st.text_input("Comment field name to depend on", value="", key=f"cr_dep_manual_{i}")
+
+                st.markdown("**Range when comment is Positive**")
+                pcol1, pcol2 = st.columns([1, 1])
+                with pcol1:
+                    pmin = st.number_input("Pos min", value=9, key=f"pos_min_{i}")
+                with pcol2:
+                    pmax = st.number_input("Pos max", value=10, key=f"pos_max_{i}")
+
+                st.markdown("**Range when comment is Neutral**")
+                ncol1, ncol2 = st.columns([1, 1])
+                with ncol1:
+                    nmin = st.number_input("Neu min", value=7, key=f"neu_min_{i}")
+                with ncol2:
+                    nmax = st.number_input("Neu max", value=8, key=f"neu_max_{i}")
+
+                st.markdown("**Range when comment is Negative**")
+                negcol1, negcol2 = st.columns([1, 1])
+                with negcol1:
+                    negmin = st.number_input("Neg min", value=0, key=f"neg_min_{i}")
+                with negcol2:
+                    negmax = st.number_input("Neg max", value=6, key=f"neg_max_{i}")
+
+                st.markdown("**Range when comment sentiment unknown / Any**")
+                acol1, acol2 = st.columns([1, 1])
+                with acol1:
+                    amin = st.number_input("Any min", value=0, key=f"any_min_{i}")
+                with acol2:
+                    amax = st.number_input("Any max", value=10, key=f"any_max_{i}")
+
+                float_toggle = st.checkbox("Float output?", value=False, key=f"cr_float_{i}")
+                precision = st.number_input("Precision (if float)", min_value=0, max_value=6, value=2, key=f"cr_prec_{i}")
+
+                field_def.update({
+                    "depends_on": depends_on,
+                    "positive_min": pmin, "positive_max": pmax,
+                    "neutral_min": nmin, "neutral_max": nmax,
+                    "negative_min": negmin, "negative_max": negmax,
+                    "any_min": amin, "any_max": amax,
+                    "float": float_toggle, "precision": precision
+                })
+
+            # append field to schema
+            schema.append(field_def)
 
 # Generate dataset
 df = generate_dummy_data(rows, schema, global_timeline=global_timeline)
