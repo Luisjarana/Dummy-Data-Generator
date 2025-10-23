@@ -591,7 +591,8 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
     uid = item["_uid"]
     label = item.get('name', '') if item.get('type') != "Grouped Enum" else " | ".join(item.get('group_fields', []))
     with st.expander(f"{EMOJI.get(item.get('type'), '')} Field {idx+1}: {label}", expanded=(idx < 6)):
-        top = st.columns([3, 3, 1])
+        # Make dropdown wider by giving its column more width
+        top = st.columns([5, 5, 2])
         with top[0]:
             if item.get("type") == "Grouped Enum":
                 st.text_input("Name (single field)", disabled=True, value="—", key=f"name_disabled_{uid}")
@@ -605,7 +606,8 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
                 type_index = type_options.index(current_type)
             except ValueError:
                 type_index = 0
-            item["type"] = st.selectbox("Type", options=type_options, index=type_index, key=f"type_{uid}")
+            # Wider selectbox thanks to the wider column
+            item["type"] = st.selectbox("Type", options=type_options, index=type_index, key=f"type_{uid}", label_visibility="visible")
         with top[2]:
             if st.button("🗑️", key=f"del_{uid}", help="Delete this field", use_container_width=True):
                 return "DELETE"
@@ -613,7 +615,7 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
         ftype = item["type"]
 
         if ftype == "Unique ID (Sequential)":
-            cols = st.columns(3)
+            cols = st.columns([3, 3, 3])
             item["start"] = int(cols[0].number_input("Start", value=int(item.get("start", 1)), step=1, key=f"seq_start_{uid}"))
             item["step"] = int(cols[1].number_input("Step", value=int(item.get("step", 1)), step=1, key=f"seq_step_{uid}"))
             item["pad_zeros"] = int(cols[2].number_input("Zeros (additional)", min_value=0, value=int(item.get("pad_zeros", 3)), step=1, key=f"seq_pad_{uid}"))
@@ -658,7 +660,7 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
                 st.warning("Each group's number of values must match the number of output fields.")
 
         if ftype == "Range (0-10)":
-            cols = st.columns(4)
+            cols = st.columns([2, 2, 2, 2])
             item["min"] = int(cols[0].number_input("Min", value=int(item.get("min", 0)), key=f"min_{uid}"))
             item["max"] = int(cols[1].number_input("Max", value=int(item.get("max", 10)), key=f"max_{uid}"))
             item["float"] = bool(cols[2].checkbox("Float?", value=bool(item.get("float", False)), key=f"float_{uid}"))
@@ -691,16 +693,16 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
                 item["depends_on"] = st.text_input("Comment field name", value=item.get("depends_on",""), key=f"cr_dep_txt_{uid}")
 
             st.markdown("**Ranges by sentiment**")
-            cols1 = st.columns(2)
+            cols1 = st.columns([2, 2])
             item["positive_min"] = int(cols1[0].number_input("Pos min", value=int(item.get("positive_min", 9)), key=f"pmin_{uid}"))
             item["positive_max"] = int(cols1[1].number_input("Pos max", value=int(item.get("positive_max", 10)), key=f"pmax_{uid}"))
-            cols2 = st.columns(2)
+            cols2 = st.columns([2, 2])
             item["neutral_min"] = int(cols2[0].number_input("Neu min", value=int(item.get("neutral_min", 7)), key=f"nmin_{uid}"))
             item["neutral_max"] = int(cols2[1].number_input("Neu max", value=int(item.get("neutral_max", 8)), key=f"nmax_{uid}"))
-            cols3 = st.columns(2)
+            cols3 = st.columns([2, 2])
             item["negative_min"] = int(cols3[0].number_input("Neg min", value=int(item.get("negative_min", 0)), key=f"negmin_{uid}"))
             item["negative_max"] = int(cols3[1].number_input("Neg max", value=int(item.get("negative_max", 6)), key=f"negmax_{uid}"))
-            cols4 = st.columns(3)
+            cols4 = st.columns([2, 2, 2])
             item["any_min"] = int(cols4[0].number_input("Any min", value=int(item.get("any_min", 0)), key=f"amin_{uid}"))
             item["any_max"] = int(cols4[1].number_input("Any max", value=int(item.get("any_max", 10)), key=f"amax_{uid}"))
             item["float"] = bool(cols4[2].checkbox("Float?", value=bool(item.get("float", False)), key=f"cr_float_{uid}"))
@@ -730,7 +732,7 @@ if uploaded_file:
 
 # ===== CENTERED layout for field editors when using uploaded schema =====
 if schema_from_upload_mode:
-    spacer_left, center_col, spacer_right = st.columns([0.5, 1.6, 0.5])
+    spacer_left, center_col, spacer_right = st.columns([0.4, 1.8, 0.4])
     with center_col:
         st.subheader("🧩 Fields (from CSV/XLSX) — Centered")
 
@@ -769,7 +771,7 @@ if schema_from_upload_mode:
             st.caption(f"Showing {len(display_items)} of {len(items)} fields")
         with c2:
             if search_query and st.button("Clear search"):
-                st.experimental_rerun()
+                st.rerun()
 
         if len(display_items) == 0:
             st.info("No fields match your search.")
@@ -781,7 +783,7 @@ if schema_from_upload_mode:
                     to_delete.append(item["_uid"])
             if to_delete:
                 st.session_state.schema_items = [it for it in st.session_state.schema_items if it["_uid"] not in to_delete]
-                st.experimental_rerun()
+                st.rerun()
 
         cols = st.columns(2)
         if cols[0].button("➕ Add empty field"):
@@ -790,10 +792,10 @@ if schema_from_upload_mode:
                 "name": f"Field{len(st.session_state.schema_items)+1}",
                 "type": "Custom Text"
             })
-            st.experimental_rerun()
+            st.rerun()
         if cols[1].button("🧹 Clear uploaded schema"):
             st.session_state.schema_items = []
-            st.experimental_rerun()
+            st.rerun()
 
     # Build schema to use (strip _uid)
     schema: List[Dict[str, Any]] = [{k: v for k, v in it.items() if k != "_uid"} for it in st.session_state.schema_items]
@@ -805,7 +807,7 @@ else:
     schema: List[Dict[str, Any]] = []
     for i in range(num_fields):
         with st.sidebar.expander(f"Field {i+1}", expanded=(i < 6)):
-            col1, col2 = st.columns([2, 2])
+            col1, col2 = st.columns([2, 3])  # slightly wider for dropdowns here too
             if i < len(DEFAULT_FIELD_ORDER):
                 default_name, default_type = DEFAULT_FIELD_ORDER[i]
             else:
@@ -821,7 +823,7 @@ else:
                 default_type_index = min(i, len(type_options_manual) - 1)
 
             with col2:
-                field_type = st.selectbox("Type", options=type_options_manual, index=default_type_index, key=f"type_{i}")
+                field_type = st.selectbox("Type", options=type_options_manual, index=default_type_index, key=f"type_{i}", label_visibility="visible")
 
             st.markdown(f"**{EMOJI.get(field_type, '')} {field_name or default_name} — _{field_type}_**")
             field_def = {"type": field_type}
