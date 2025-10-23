@@ -6,8 +6,6 @@ import io
 import uuid
 from datetime import datetime, timedelta
 import math
-import numpy as np
-import io
 from typing import List, Dict, Any
 
 fake = Faker()
@@ -61,6 +59,9 @@ COMMENTS_NEGATIVE = [
     "Unhappy with the outcome.",
 ]
 
+# -----------------
+# Helper functions
+# -----------------
 def _clamp(x, a=0.0, b=1.0):
     return max(a, min(b, x))
 
@@ -73,6 +74,7 @@ def _normalize_probs(p):
 def _apply_trend(base_probs, time_factor, trend_type, strength):
     bp = list(base_probs)
     pos, neu, neg = bp
+
     if trend_type == "Increasing Positive":
         pos = pos + strength * time_factor * (1 - pos)
         neg = neg - strength * time_factor * neg
@@ -128,8 +130,6 @@ def _parse_weights(raw: str, n):
     return weights
 
 def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
-    dates = []
-    current_date = start_date
     date_list = []
     num_unique_dates = math.ceil(rows / entries_per_date)
     if num_unique_dates <= 1:
@@ -147,8 +147,126 @@ def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
                 break
     return date_list[:rows]
 
+def _safe_lower(x):
+    try:
+        return str(x).strip().lower()
+    except Exception:
+        return ""
+
+def _safe_str(x: Any) -> str:
+    try:
+        if x is None:
+            return ""
+        # pandas/NumPy NA
+        try:
+            if pd.isna(x):
+                return ""
+        except Exception:
+            pass
+        return str(x)
+    except Exception:
+        return ""
+
+# -----------------------------
+# CSV/XLSX schema → app schema
+# -----------------------------
+def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
+    """
+    Map (Name, field, values) to internal schema item.
+    Rules:
+      *_txt        -> Unique ID (UUID)
+      *_auto       -> Unique ID (Sequential)
+      yn/_yn       -> Custom Enum 1,2 (or from values)
+      *_date       -> Date
+      *_email      -> Email
+      *_enum/_alt  -> Custom Enum from values
+      UNIT/unit    -> Custom Enum from values (defaults if empty)
+      *_cmt        -> Comment (Sentiment)
+      *_scale11    -> Range (0-10) (ints)
+      default      -> Custom Text
+    """
+    n = _safe_str(name).strip() or "Field"
+    f = _safe_lower(field_code)
+    v = _safe_str(values).strip()
+
+    # Unique IDs
+    if f.endswith("_auto"):
+        return {"name": n, "type": "Unique ID (Sequential)", "start": 1, "step": 1, "pad_zeros": 3}
+    if f.endswith("_txt"):
+        return {"name": n, "type": "Unique ID (UUID)"}
+
+    # Email
+    if f.endswith("_email"):
+        return {"name": n, "type": "Email"}
+
+    # yes/no (1/2)
+    if f == "yn" or f.endswith("_yn"):
+        enum_vals = _parse_enum_values(v) if v else ["1", "2"]
+        if not enum_vals:
+            enum_vals = ["1", "2"]
+        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+
+    # dates
+    if f.endswith("_date"):
+        return {"name": n, "type": "Date"}
+
+    # enum-like (includes UNIT)
+    if f.endswith("_enum") or f.endswith("_alt") or f == "unit":
+        enum_vals = _parse_enum_values(v)
+        if f == "unit" and not enum_vals:
+            enum_vals = ["cm", "m", "km", "in", "ft"]
+        if not enum_vals:
+            enum_vals = ["A", "B", "C"]
+        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+
+    # comment
+    if f.endswith("_cmt"):
+        return {"name": n, "type": "Comment (Sentiment)", "sentiment": "Random"}
+
+    # 0-10 scale
+    if f.endswith("_scale11"):
+        return {"name": n, "type": "Range (0-10)", "min": 0, "max": 10, "float": False, "precision": 0}
+
+    # fallback
+    return {"name": n, "type": "Custom Text"}
+
+def build_schema_from_dataframe(upload_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    # Normalize columns and validate
+    cols = {c.strip().lower(): c for c in upload_df.columns}
+    required = ["name", "field", "values"]
+    for r in required:
+        if r not in cols:
+            raise ValueError(f"Missing required column: '{r}'")
+    name_c = cols["name"]
+    field_c = cols["field"]
+    values_c = cols["values"]
+    schema: List[Dict[str, Any]] = []
+    for _, row in upload_df.iterrows():
+        name = row.get(name_c, "")
+        field_code = row.get(field_c, "")
+        values = row.get(values_c, "")
+        schema.append(map_row_to_field(name, field_code, values))
+    return schema
+
+def read_uploaded_schema(file) -> pd.DataFrame:
+    if file is None:
+        return None
+    name = file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(file)
+    return pd.read_excel(file)
+
+# -----------------------
+# Data generation engine
+# -----------------------
 def generate_dummy_data(rows, schema, global_timeline=None):
-    # PASS 1: base rows
+    """
+    Generate dataset:
+      - First pass: generate non-comment, non-conditional fields (so date fields exist)
+      - Second pass: generate comment fields (trend-aware)
+      - Third pass: evaluate conditional ranges & sequential IDs
+    """
+    # PASS 1: base rows (includes Constants & Custom Enums)
     base_rows = []
     for i in range(rows):
         row = {}
@@ -197,6 +315,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 else:
                     row[fname] = None
                 continue
+            # skip comment and conditional-range types here (we'll handle later)
             if ftype in ("Comment (Sentiment)", "Conditional Range (Based on Comment Sentiment)"):
                 continue
             gen = FIELD_TYPES.get(ftype)
@@ -206,7 +325,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 row[fname] = None
         base_rows.append(row)
 
-    # sequential dates
+    # Generate sequential dates for all Date (Sequential) fields
     for field in schema:
         if field["type"] == "Date (Sequential)":
             fname = field["name"]
@@ -217,7 +336,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             for i, row in enumerate(base_rows):
                 row[fname] = date_list[i]
 
-    # PASS 2: comments
+    # PASS 2: comments (trend aware)
     sentiments_per_row = [dict() for _ in range(rows)]
 
     def _compute_date_range(field_name):
@@ -239,9 +358,11 @@ def generate_dummy_data(rows, schema, global_timeline=None):
         for field in schema:
             fname = field["name"]
             ftype = field["type"]
+
             if ftype != "Comment (Sentiment)":
                 continue
 
+            # Trend settings
             trend_enabled = field.get("trend_enabled", False)
             trend_type = field.get("trend_type", "Increasing Positive")
             trend_strength = float(field.get("trend_strength", 0.5))
@@ -310,9 +431,10 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             row[fname] = comment_text
             sentiments_per_row[i][fname] = sentiment
 
-    # PASS 3: conditional ranges & sequential IDs
+    # PASS 3: conditional ranges and sequential ids
     final_rows = []
     for i, row in enumerate(base_rows):
+        # Sequential IDs: any field of that type should be added now
         for field in schema:
             fname = field["name"]
             ftype = field["type"]
@@ -333,6 +455,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 amin, amax = int(field.get("any_min", 0)), int(field.get("any_max", 10))
                 use_float = field.get("float", False)
                 precision = int(field.get("precision", 2))
+
                 actual_sent = sentiments_per_row[i].get(depends_on)
                 if actual_sent == "Positive":
                     min_v, max_v = pmin, pmax
@@ -342,8 +465,10 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                     min_v, max_v = negmin, negmax
                 else:
                     min_v, max_v = amin, amax
+
                 if min_v > max_v:
                     min_v, max_v = max_v, min_v
+
                 if use_float:
                     val = round(random.uniform(min_v, max_v), precision)
                 else:
@@ -351,171 +476,12 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 row[fname] = val
 
         final_rows.append(row)
+
     return pd.DataFrame(final_rows)
 
-# =======================
-# NEW: Schema from upload
-# =======================
-def _safe_lower(x):
-    try:
-        return str(x).strip().lower()
-    except Exception:
-        return ""
-
-def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
-    """
-    Map (Name, field, values) to internal schema item.
-    Rules:
-      *_txt      -> Unique ID (UUID)
-      *_auto     -> Unique ID (Sequential)
-      yn/_yn     -> Custom Enum 1,2 (or from values)
-      *_date     -> Date
-      *_enum/_alt-> Custom Enum from values
-      UNIT       -> Custom Enum from values
-      *_cmt      -> Comment (Sentiment)
-      *_scale11  -> Range (0-10) (ints)
-      default    -> Custom Text
-    """
-    n = (name or "").strip() or "Field"
-    f = _safe_lower(field_code)
-    v = (values or "").strip()
-
-    # Unique IDs
-    if f.endswith("_auto"):
-        return {"name": n, "type": "Unique ID (Sequential)", "start": 1, "step": 1, "pad_zeros": 3}
-    if f.endswith("_txt"):
-        return {"name": n, "type": "Unique ID (UUID)"}
-
-    # yes/no (1/2)
-    if f == "yn" or f.endswith("_yn"):
-        enum_vals = _parse_enum_values(v) if v else ["1", "2"]
-        if not enum_vals:
-            enum_vals = ["1", "2"]
-        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
-
-    # dates
-    if f.endswith("_date"):
-        return {"name": n, "type": "Date"}
-
-    # enum-like
-    if f.endswith("_enum") or f.endswith("_alt") or f == "unit" or f.upper() == "UNIT":
-        enum_vals = _parse_enum_values(v)
-        # default units if none provided
-        if (f == "unit" or f.upper() == "UNIT") and not enum_vals:
-            enum_vals = ["cm", "m", "km", "in", "ft"]
-        if not enum_vals:
-            enum_vals = ["A", "B", "C"]
-        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
-
-    # comment
-    if f.endswith("_cmt"):
-        return {"name": n, "type": "Comment (Sentiment)", "sentiment": "Random"}
-
-    # 0-10 scale (integer)
-    if f.endswith("_scale11"):
-        return {"name": n, "type": "Range (0-10)", "min": 0, "max": 10, "float": False, "precision": 0}
-
-    # fallback
-    return {"name": n, "type": "Custom Text"}
-
-def build_schema_from_dataframe(upload_df: pd.DataFrame) -> List[Dict[str, Any]]:
-    # Normalize columns and validate
-    cols = {c.strip().lower(): c for c in upload_df.columns}
-    required = ["name", "field", "values"]
-    for r in required:
-        if r not in cols:
-            raise ValueError(f"Missing required column: '{r}'")
-    name_c = cols["name"]
-    field_c = cols["field"]
-    values_c = cols["values"]
-    schema: List[Dict[str, Any]] = []
-    for _, row in upload_df.iterrows():
-        name = row.get(name_c, "")
-        field_code = row.get(field_c, "")
-        values = row.get(values_c, "")
-        schema.append(map_row_to_field(name, field_code, values))
-    return schema
-
-def read_uploaded_schema(file) -> pd.DataFrame:
-    if file is None:
-        return None
-    name = file.name.lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(file)
-    # default to excel for other cases
-    return pd.read_excel(file)
-
-# ==========================
-# 📥 Downloadable schema templates
-# ==========================
-st.subheader("📥 Download schema template")
-
-# Blank template (headers only)
-blank_template = pd.DataFrame(columns=["Name", "field", "values"])
-
-# Example template (shows the supported patterns)
-example_template = pd.DataFrame([
-    {"Name": "id",         "field": "user_auto",   "values": ""},                       # *_auto -> sequential ID
-    {"Name": "uuid",       "field": "user_txt",    "values": ""},                       # *_txt  -> UUID
-    {"Name": "answer",     "field": "question_yn", "values": "1,2"},                    # yn/_yn -> enum (or override here)
-    {"Name": "visit_date", "field": "visit_date",  "values": ""},                       # *_date -> random date
-    {"Name": "rating",     "field": "csat_scale11","values": ""},                       # *_scale11 -> 0..10
-    {"Name": "mood",       "field": "mood_enum",   "values": "happy,neutral,sad"},      # *_enum/_alt -> enum from values
-    {"Name": "note",       "field": "feedback_cmt","values": ""},                       # *_cmt -> sentiment comment
-    {"Name": "unit",       "field": "UNIT",        "values": "kg,g,lb"},                # UNIT   -> enum from values
-])
-
-def _to_csv_bytes(df: pd.DataFrame) -> io.BytesIO:
-    buf = io.BytesIO()
-    buf.write(df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"))
-    buf.seek(0)
-    return buf
-
-def _to_xlsx_bytes(df: pd.DataFrame) -> io.BytesIO:
-    buf = io.BytesIO()
-    df.to_excel(buf, index=False, engine="openpyxl")
-    buf.seek(0)
-    return buf
-
-colA, colB = st.columns(2)
-with colA:
-    st.markdown("**Blank template**")
-    st.download_button(
-        "Download CSV (blank)",
-        data=_to_csv_bytes(blank_template),
-        file_name="schema_template_blank.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-    st.download_button(
-        "Download XLSX (blank)",
-        data=_to_xlsx_bytes(blank_template),
-        file_name="schema_template_blank.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-with colB:
-    st.markdown("**Example template**")
-    st.download_button(
-        "Download CSV (example)",
-        data=_to_csv_bytes(example_template),
-        file_name="schema_template_example.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-    st.download_button(
-        "Download XLSX (example)",
-        data=_to_xlsx_bytes(example_template),
-        file_name="schema_template_example.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-st.caption("Templates include required headers: **Name, field, values**. Fill and upload in the sidebar.")
-
-
-# --- UI ---
+# -----------------
+# Streamlit UI
+# -----------------
 st.set_page_config(page_title="Custom Dummy Data Generator", layout="wide")
 st.title("📊 Custom Dummy Data Generator")
 st.markdown("Generate dummy data with manual fields **or** from an uploaded CSV/XLSX schema (columns: **Name, field, values**).")
@@ -535,9 +501,7 @@ if use_global_timeline:
     else:
         global_timeline = {"start_date": pd.to_datetime(gstart), "end_date": pd.to_datetime(gend)}
 
-# ==========================
-# NEW: Upload schema section
-# ==========================
+# Upload schema section
 st.sidebar.subheader("📄 Upload schema (CSV/XLSX)")
 uploaded_file = st.sidebar.file_uploader("Schema file with columns: Name, field, values", type=["csv", "xlsx", "xls"])
 
@@ -584,7 +548,6 @@ if uploaded_file:
 
         with st.expander("🔍 Parsed schema (from file)", expanded=False):
             st.dataframe(pd.DataFrame(schema))
-
     except Exception as e:
         st.error(f"Failed to read/parse schema: {e}")
         st.stop()
@@ -742,10 +705,78 @@ else:
 
             schema.append(field_def)
 
-# Generate dataset
+# ==========================
+# 📥 Downloadable schema templates
+# ==========================
+st.subheader("📥 Download schema template")
+
+blank_template = pd.DataFrame(columns=["Name", "field", "values"])
+example_template = pd.DataFrame([
+    {"Name": "id",            "field": "user_auto",       "values": ""},                       # *_auto -> sequential ID
+    {"Name": "uuid",          "field": "user_txt",        "values": ""},                       # *_txt  -> UUID
+    {"Name": "contact_email", "field": "contact_email",   "values": ""},                       # *_email -> Email
+    {"Name": "answer",        "field": "question_yn",     "values": "1,2"},                    # yn/_yn -> enum (or override here)
+    {"Name": "visit_date",    "field": "visit_date",      "values": ""},                       # *_date -> random date
+    {"Name": "rating",        "field": "csat_scale11",    "values": ""},                       # *_scale11 -> 0..10
+    {"Name": "mood",          "field": "mood_enum",       "values": "happy,neutral, sad"},     # *_enum/_alt -> enum from values
+    {"Name": "note",          "field": "feedback_cmt",    "values": ""},                       # *_cmt -> sentiment comment
+    {"Name": "unit",          "field": "UNIT",            "values": "kg,g,lb"},                # UNIT   -> enum from values
+])
+
+def _to_csv_bytes(df: pd.DataFrame) -> io.BytesIO:
+    buf = io.BytesIO()
+    buf.write(df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"))
+    buf.seek(0)
+    return buf
+
+def _to_xlsx_bytes(df: pd.DataFrame) -> io.BytesIO:
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    buf.seek(0)
+    return buf
+
+colA, colB = st.columns(2)
+with colA:
+    st.markdown("**Blank template**")
+    st.download_button(
+        "Download CSV (blank)",
+        data=_to_csv_bytes(blank_template),
+        file_name="schema_template_blank.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+    st.download_button(
+        "Download XLSX (blank)",
+        data=_to_xlsx_bytes(blank_template),
+        file_name="schema_template_blank.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+with colB:
+    st.markdown("**Example template**")
+    st.download_button(
+        "Download CSV (example)",
+        data=_to_csv_bytes(example_template),
+        file_name="schema_template_example.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+    st.download_button(
+        "Download XLSX (example)",
+        data=_to_xlsx_bytes(example_template),
+        file_name="schema_template_example.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+st.caption("Templates include required headers: **Name, field, values**. Fill and upload in the sidebar.")
+
+# ---------------
+# Generate & show
+# ---------------
 df = generate_dummy_data(rows, schema, global_timeline=global_timeline)
 
-# Show preview
 st.subheader(f"Preview of {rows} rows")
 st.dataframe(df, use_container_width=True)
 
