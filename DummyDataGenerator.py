@@ -206,16 +206,13 @@ def t(lang: str, key: str) -> str:
 # =========================
 # Stable field type codes
 # =========================
-# We store 'ft' = one of these codes in session & schema; UI shows localized labels.
 FT_CODES = [
     "seq", "uuid", "full", "first", "last", "email", "phone", "address", "company",
     "age", "job", "country", "date", "date_seq", "ctext", "cnum",
     "range", "comment", "cond_range", "const", "cenum", "genum"
 ]
 
-# Labels/emojis per code (language-aware for labels)
 def ft_label(lang: str, code: str) -> str:
-    L = I18N[lang]
     mapping = {
         "seq": "Unique ID (Sequential)",
         "uuid": "Unique ID (UUID)",
@@ -240,34 +237,7 @@ def ft_label(lang: str, code: str) -> str:
         "cenum": "Custom Enum",
         "genum": "Grouped Enum",
     }
-    # Use English labels from i18n “field_types” in older code if desired.
-    # For simplicity we keep labels in English/Spanish pairs above:
-    if lang == "es":
-        trans = {
-            "Unique ID (Sequential)": "Unique ID (Sequential)",
-            "Unique ID (UUID)": "Unique ID (UUID)",
-            "Full Name": "Full Name",
-            "First Name": "First Name",
-            "Last Name": "Last Name",
-            "Email": "Email",
-            "Phone": "Phone",
-            "Address": "Address",
-            "Company": "Company",
-            "Age": "Age",
-            "Job Title": "Job Title",
-            "Country": "Country",
-            "Date": "Date",
-            "Date (Sequential)": "Date (Sequential)",
-            "Custom Text": "Custom Text",
-            "Custom Number": "Custom Number",
-            "Range (0-10)": "Range (0-10)",
-            "Comment (Sentiment)": "Comment (Sentiment)",
-            "Conditional Range (Based on Comment Sentiment)": "Conditional Range (Based on Comment Sentiment)",
-            "Constant": "Constant",
-            "Custom Enum": "Custom Enum",
-            "Grouped Enum": "Grouped Enum",
-        }
-        return trans.get(mapping.get(code, code), mapping.get(code, code))
+    # (Optional) translate labels if you later add localized labels.
     return mapping.get(code, code)
 
 EMOJI = {
@@ -277,6 +247,11 @@ EMOJI = {
     "ctext": "📝", "cnum": "🔣", "range": "📏", "comment": "💬", "cond_range": "🎯",
     "const": "🔒", "cenum": "🧩", "genum": "🧩👥",
 }
+
+# Reverse label → code (to migrate legacy items that stored 'type' as a label)
+LABEL_TO_CODE = {ft_label("en", c): c for c in FT_CODES}
+# Also accept raw codes as labels just in case
+LABEL_TO_CODE.update({c: c for c in FT_CODES})
 
 # ==============
 # Streamlit page
@@ -491,6 +466,81 @@ def _random_time():
 def _clear_schema_search():
     st.session_state["schema_search"] = ""
 
+# ---------- NEW: migration helpers (fixes your dropdown mismatch) ----------
+def _ensure_uid(item: Dict[str, Any]) -> None:
+    if "_uid" not in item or not item["_uid"]:
+        item["_uid"] = str(uuid.uuid4())
+
+def _migrate_type_to_ft(item: Dict[str, Any]) -> None:
+    """Normalize an item to have 'ft' code; accept legacy 'type' labels/codes."""
+    if "ft" in item and item["ft"] in FT_CODES:
+        return
+    # Legacy path: 'type' exists (label or code)
+    legacy_type = item.get("type")
+    if isinstance(legacy_type, str):
+        code = LABEL_TO_CODE.get(legacy_type.strip(), None)
+        if code is None:
+            # try a few known alternates
+            alt = legacy_type.strip().lower()
+            # very rough fallbacks
+            if alt in ["unique id (sequential)", "sequential id", "id seq", "unique id"]:
+                code = "seq"
+            elif alt in ["unique id (uuid)", "uuid"]:
+                code = "uuid"
+            elif "comment" in alt:
+                code = "comment"
+            elif "conditional" in alt and "range" in alt:
+                code = "cond_range"
+            elif "date" in alt and "sequential" in alt:
+                code = "date_seq"
+            elif "date" in alt:
+                code = "date"
+            elif "enum" in alt and "group" in alt:
+                code = "genum"
+            elif "enum" in alt:
+                code = "cenum"
+            elif "range" in alt:
+                code = "range"
+            elif "constant" in alt:
+                code = "const"
+            elif "phone" in alt:
+                code = "phone"
+            elif "email" in alt:
+                code = "email"
+            elif "first" in alt:
+                code = "first"
+            elif "last" in alt:
+                code = "last"
+            elif "full" in alt and "name" in alt:
+                code = "full"
+            elif "company" in alt:
+                code = "company"
+            elif "job" in alt:
+                code = "job"
+            elif "country" in alt:
+                code = "country"
+            elif "number" in alt:
+                code = "cnum"
+            elif "text" in alt:
+                code = "ctext"
+        if code in FT_CODES:
+            item["ft"] = code
+            item.pop("type", None)
+            return
+    # If still nothing, default to ctext
+    item["ft"] = "ctext"
+    item.pop("type", None)
+
+def _normalize_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out = []
+    for it in items:
+        it = dict(it)
+        _ensure_uid(it)
+        _migrate_type_to_ft(it)
+        out.append(it)
+    return out
+# ---------------------------------------------------------------------------
+
 # =========================
 # CSV → app schema mapping
 # =========================
@@ -507,7 +557,6 @@ def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
       *_cmt -> Comment
       *_scale11 -> Range (0-10)
       default -> Custom Text
-    Returns a dict with 'ft' (type code). Grouped Enum has no single 'name', it has 'group_fields'.
     """
     n_raw = _safe_str(name).strip() or "Field"
     f = _safe_lower(field_code)
@@ -527,7 +576,6 @@ def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
                     "weights_raw": "",
                     "_uid": str(uuid.uuid4()),
                 }
-            # Fallback to single-field enum
         enum_vals = _parse_enum_values(v)
         return {"name": n_raw, "ft": "cenum", "values_raw": ",".join(enum_vals),
                 "enum_mode": "Random", "weights_raw": "", "_uid": str(uuid.uuid4())}
@@ -830,13 +878,18 @@ if uploaded_file:
     try:
         upload_df = read_uploaded_schema(uploaded_file)
         parsed_schema = build_schema_from_dataframe(upload_df)
+        # normalize new items (add _uid, convert 'type'→'ft' if any)
+        parsed_schema = _normalize_items(parsed_schema)
         if st.session_state.schema_loaded_name != uploaded_file.name:
-            st.session_state.schema_items = parsed_schema  # each has _uid and ft
+            st.session_state.schema_items = parsed_schema
             st.session_state.schema_loaded_name = uploaded_file.name
         schema_from_upload_mode = True
     except Exception as e:
         st.error(f"{t(lang,'failed_parse')}: {e}")
         st.stop()
+
+# ALWAYS normalize whatever is in session (handles legacy items)
+st.session_state.schema_items = _normalize_items(st.session_state.schema_items)
 
 def _item_search_text(it: Dict[str, Any]) -> str:
     ft = _safe_lower(it.get("ft", ""))
@@ -860,7 +913,7 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
             else:
                 item["name"] = ui.text_input(t(lang,"name"), value=item.get("name", f"{t(lang,'field_label')} {idx+1}"), key=f"name_{uid}")
         with top[1]:
-            # Select by CODE (stable), show localized label
+            # Select by CODE (stable), show label
             current_code = item.get("ft", "ctext")
             item["ft"] = ui.selectbox(
                 t(lang, "type"),
@@ -977,6 +1030,9 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
     return "OK"
 
 # Build editor if CSV uploaded; else manual builder
+if uploaded_file is not None:
+    schema_from_upload_mode = True
+
 if schema_from_upload_mode:
     st.sidebar.subheader(t(lang, "csv_fields"))
 
@@ -987,8 +1043,7 @@ if schema_from_upload_mode:
     with c2:
         st.sidebar.button(t(lang, "clear"), key="clear_search_btn", on_click=_clear_schema_search)
 
-    # full list then filter
-    items = st.session_state.schema_items
+    items = st.session_state.schema_items  # already normalized
     display_items = [it for it in items if (search_query in _item_search_text(it))] if search_query else items
 
     # collect all comment names from FULL list (not filtered)
@@ -1021,7 +1076,6 @@ if schema_from_upload_mode:
         st.session_state.schema_items = []
         st.rerun()
 
-    # Schema to use (strip only _uid)
     schema: List[Dict[str, Any]] = [{k: v for k, v in it.items() if k != "_uid"} for it in st.session_state.schema_items]
 
 else:
@@ -1261,7 +1315,7 @@ st.caption(t(lang, "templates_caption"))
 schema_to_use = schema
 df = generate_dummy_data(rows, schema_to_use, global_timeline=global_timeline)
 
-# ✅ Format date columns as "mm/dd/yyyy, hh:mm AM/PM" for display/export
+# ✅ Format date columns as "mm/dd/yyyy, %I:%M %p"
 date_fields = [f.get("name") for f in schema_to_use if f.get("ft") in ["date", "date_seq"]]
 df_fmt = df.copy()
 for col in date_fields:
