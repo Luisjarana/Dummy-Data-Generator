@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 import math
 import numpy as np
+import io
 from typing import List, Dict, Any
 
 fake = Faker()
@@ -443,6 +444,76 @@ def read_uploaded_schema(file) -> pd.DataFrame:
         return pd.read_csv(file)
     # default to excel for other cases
     return pd.read_excel(file)
+
+# ==========================
+# 📥 Downloadable schema templates
+# ==========================
+st.subheader("📥 Download schema template")
+
+# Blank template (headers only)
+blank_template = pd.DataFrame(columns=["Name", "field", "values"])
+
+# Example template (shows the supported patterns)
+example_template = pd.DataFrame([
+    {"Name": "id",         "field": "user_auto",   "values": ""},                       # *_auto -> sequential ID
+    {"Name": "uuid",       "field": "user_txt",    "values": ""},                       # *_txt  -> UUID
+    {"Name": "answer",     "field": "question_yn", "values": "1,2"},                    # yn/_yn -> enum (or override here)
+    {"Name": "visit_date", "field": "visit_date",  "values": ""},                       # *_date -> random date
+    {"Name": "rating",     "field": "csat_scale11","values": ""},                       # *_scale11 -> 0..10
+    {"Name": "mood",       "field": "mood_enum",   "values": "happy,neutral,sad"},      # *_enum/_alt -> enum from values
+    {"Name": "note",       "field": "feedback_cmt","values": ""},                       # *_cmt -> sentiment comment
+    {"Name": "unit",       "field": "UNIT",        "values": "kg,g,lb"},                # UNIT   -> enum from values
+])
+
+def _to_csv_bytes(df: pd.DataFrame) -> io.BytesIO:
+    buf = io.BytesIO()
+    buf.write(df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"))
+    buf.seek(0)
+    return buf
+
+def _to_xlsx_bytes(df: pd.DataFrame) -> io.BytesIO:
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    buf.seek(0)
+    return buf
+
+colA, colB = st.columns(2)
+with colA:
+    st.markdown("**Blank template**")
+    st.download_button(
+        "Download CSV (blank)",
+        data=_to_csv_bytes(blank_template),
+        file_name="schema_template_blank.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+    st.download_button(
+        "Download XLSX (blank)",
+        data=_to_xlsx_bytes(blank_template),
+        file_name="schema_template_blank.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+with colB:
+    st.markdown("**Example template**")
+    st.download_button(
+        "Download CSV (example)",
+        data=_to_csv_bytes(example_template),
+        file_name="schema_template_example.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+    st.download_button(
+        "Download XLSX (example)",
+        data=_to_xlsx_bytes(example_template),
+        file_name="schema_template_example.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+st.caption("Templates include required headers: **Name, field, values**. Fill and upload in the sidebar.")
+
 
 # --- UI ---
 st.set_page_config(page_title="Custom Dummy Data Generator", layout="wide")
