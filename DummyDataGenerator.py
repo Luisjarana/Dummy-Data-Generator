@@ -6,6 +6,8 @@ import io
 import uuid
 from datetime import datetime, timedelta
 import math
+import numpy as np
+from typing import List, Dict, Any
 
 fake = Faker()
 
@@ -70,7 +72,6 @@ def _normalize_probs(p):
 def _apply_trend(base_probs, time_factor, trend_type, strength):
     bp = list(base_probs)
     pos, neu, neg = bp
-
     if trend_type == "Increasing Positive":
         pos = pos + strength * time_factor * (1 - pos)
         neg = neg - strength * time_factor * neg
@@ -107,15 +108,13 @@ def _apply_trend(base_probs, time_factor, trend_type, strength):
 def _parse_enum_values(raw: str):
     if raw is None:
         return []
-    # support both "a,b,c" and "a, b, c" and also "a|b|c" (just in case)
-    sep = "," if ("," in raw or "|" not in raw) else "|"
-    items = [s.strip() for s in str(raw).split(sep)]
+    items = [s.strip() for s in str(raw).split(",")]
     return [s for s in items if s != ""]
 
 def _parse_weights(raw: str, n):
     if not raw:
         return None
-    parts = [p.strip() for p in raw.split(",")]
+    parts = [p.strip() for p in str(raw).split(",")]
     try:
         weights = [float(p) for p in parts]
     except Exception:
@@ -132,13 +131,11 @@ def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
     current_date = start_date
     date_list = []
     num_unique_dates = math.ceil(rows / entries_per_date)
-
     if num_unique_dates <= 1:
         date_list = [start_date] * rows
     else:
         total_days = (end_date - start_date).days
         day_increment = max(1, total_days // (num_unique_dates - 1))
-
         for i in range(num_unique_dates):
             date = start_date + timedelta(days=min(i * day_increment, total_days))
             for _ in range(min(entries_per_date, rows - len(date_list))):
@@ -147,11 +144,10 @@ def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
                     break
             if len(date_list) >= rows:
                 break
-
     return date_list[:rows]
 
 def generate_dummy_data(rows, schema, global_timeline=None):
-    # PASS 1
+    # PASS 1: base rows
     base_rows = []
     for i in range(rows):
         row = {}
@@ -195,17 +191,21 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 continue
             if ftype == "Date":
                 gen = FIELD_TYPES.get(ftype)
-                row[fname] = gen() if callable(gen) else None
+                if callable(gen):
+                    row[fname] = gen()
+                else:
+                    row[fname] = None
                 continue
             if ftype in ("Comment (Sentiment)", "Conditional Range (Based on Comment Sentiment)"):
                 continue
-
             gen = FIELD_TYPES.get(ftype)
-            row[fname] = gen() if callable(gen) else None
-
+            if callable(gen):
+                row[fname] = gen()
+            else:
+                row[fname] = None
         base_rows.append(row)
 
-    # Sequential dates
+    # sequential dates
     for field in schema:
         if field["type"] == "Date (Sequential)":
             fname = field["name"]
@@ -216,7 +216,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             for i, row in enumerate(base_rows):
                 row[fname] = date_list[i]
 
-    # PASS 2: comments (trend aware)
+    # PASS 2: comments
     sentiments_per_row = [dict() for _ in range(rows)]
 
     def _compute_date_range(field_name):
@@ -309,7 +309,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             row[fname] = comment_text
             sentiments_per_row[i][fname] = sentiment
 
-    # PASS 3
+    # PASS 3: conditional ranges & sequential IDs
     final_rows = []
     for i, row in enumerate(base_rows):
         for field in schema:
@@ -332,7 +332,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 amin, amax = int(field.get("any_min", 0)), int(field.get("any_max", 10))
                 use_float = field.get("float", False)
                 precision = int(field.get("precision", 2))
-
                 actual_sent = sentiments_per_row[i].get(depends_on)
                 if actual_sent == "Positive":
                     min_v, max_v = pmin, pmax
@@ -342,7 +341,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                     min_v, max_v = negmin, negmax
                 else:
                     min_v, max_v = amin, amax
-
                 if min_v > max_v:
                     min_v, max_v = max_v, min_v
                 if use_float:
@@ -352,92 +350,104 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 row[fname] = val
 
         final_rows.append(row)
-
     return pd.DataFrame(final_rows)
 
-# ---------- NEW: CSV schema parsing ----------
-def parse_csv_schema(csv_text: str):
+# =======================
+# NEW: Schema from upload
+# =======================
+def _safe_lower(x):
+    try:
+        return str(x).strip().lower()
+    except Exception:
+        return ""
+
+def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
     """
-    Accepts a CSV text with columns: Name, field, values
-    Suffix mapping:
-      *_auto   -> Unique ID (UUID)
-      *_txt    -> Unique ID (Sequential)
-      yn       -> Custom Enum [1,2]
-      *_date   -> Date
-      *_enum   -> Custom Enum (from values)
-      *_alt    -> Custom Enum (from values)
-      *_cmt    -> Comment (Sentiment)  (values can be: positive|neutral|negative)
-      *_scale11-> Range (0-10)
-      UNIT     -> Custom Enum (from values; fallback common units)
+    Map (Name, field, values) to internal schema item.
+    Rules:
+      *_txt      -> Unique ID (UUID)
+      *_auto     -> Unique ID (Sequential)
+      yn/_yn     -> Custom Enum 1,2 (or from values)
+      *_date     -> Date
+      *_enum/_alt-> Custom Enum from values
+      UNIT       -> Custom Enum from values
+      *_cmt      -> Comment (Sentiment)
+      *_scale11  -> Range (0-10) (ints)
+      default    -> Custom Text
     """
-    df = pd.read_csv(io.StringIO(csv_text))
-    # Normalize column names
-    cols = {c.strip().lower(): c for c in df.columns}
+    n = (name or "").strip() or "Field"
+    f = _safe_lower(field_code)
+    v = (values or "").strip()
+
+    # Unique IDs
+    if f.endswith("_auto"):
+        return {"name": n, "type": "Unique ID (Sequential)", "start": 1, "step": 1, "pad_zeros": 3}
+    if f.endswith("_txt"):
+        return {"name": n, "type": "Unique ID (UUID)"}
+
+    # yes/no (1/2)
+    if f == "yn" or f.endswith("_yn"):
+        enum_vals = _parse_enum_values(v) if v else ["1", "2"]
+        if not enum_vals:
+            enum_vals = ["1", "2"]
+        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+
+    # dates
+    if f.endswith("_date"):
+        return {"name": n, "type": "Date"}
+
+    # enum-like
+    if f.endswith("_enum") or f.endswith("_alt") or f == "unit" or f.upper() == "UNIT":
+        enum_vals = _parse_enum_values(v)
+        # default units if none provided
+        if (f == "unit" or f.upper() == "UNIT") and not enum_vals:
+            enum_vals = ["cm", "m", "km", "in", "ft"]
+        if not enum_vals:
+            enum_vals = ["A", "B", "C"]
+        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+
+    # comment
+    if f.endswith("_cmt"):
+        return {"name": n, "type": "Comment (Sentiment)", "sentiment": "Random"}
+
+    # 0-10 scale (integer)
+    if f.endswith("_scale11"):
+        return {"name": n, "type": "Range (0-10)", "min": 0, "max": 10, "float": False, "precision": 0}
+
+    # fallback
+    return {"name": n, "type": "Custom Text"}
+
+def build_schema_from_dataframe(upload_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    # Normalize columns and validate
+    cols = {c.strip().lower(): c for c in upload_df.columns}
     required = ["name", "field", "values"]
     for r in required:
-        if r not in [c.strip().lower() for c in df.columns]:
-            raise ValueError("CSV must contain columns: Name, field, values")
-    name_col = cols["name"]
-    field_col = cols["field"]
-    values_col = cols["values"]
-
-    schema = []
-    for _, r in df.iterrows():
-        name = str(r[name_col]).strip()
-        fld = str(r[field_col]).strip()
-        vals_raw = "" if pd.isna(r[values_col]) else str(r[values_col])
-        fld_l = fld.lower()
-
-        # Default field def
-        fdef = {"name": name}
-
-        # Matching rules
-        if fld_l.endswith("_auto"):
-            fdef.update({"type": "Unique ID (UUID)"})
-        elif fld_l.endswith("_txt"):
-            fdef.update({"type": "Unique ID (Sequential)", "start": 1, "step": 1, "pad_zeros": 3})
-        elif fld_l == "yn" or fld_l.endswith("_yn"):
-            fdef.update({"type": "Custom Enum", "values_raw": "1,2", "enum_mode": "Random", "weights_raw": ""})
-        elif fld_l.endswith("_date"):
-            # Simple random date; user can still add a Date (Sequential) manually if needed
-            fdef.update({"type": "Date"})
-        elif fld_l.endswith("_enum") or fld_l.endswith("_alt"):
-            options = _parse_enum_values(vals_raw)
-            fdef.update({"type": "Custom Enum",
-                         "values_raw": ",".join(options) if options else "",
-                         "enum_mode": "Random", "weights_raw": ""})
-        elif fld_l.endswith("_cmt"):
-            sentiment_hint = str(vals_raw).strip().lower()
-            sentiment = "Random"
-            if sentiment_hint in {"positive", "pos", "p"}:
-                sentiment = "Positive"
-            elif sentiment_hint in {"neutral", "neu", "n"}:
-                sentiment = "Neutral"
-            elif sentiment_hint in {"negative", "neg", "ng"}:
-                sentiment = "Negative"
-            fdef.update({"type": "Comment (Sentiment)", "sentiment": sentiment,
-                         "trend_enabled": False, "base_preset": "Balanced"})
-        elif fld_l.endswith("_scale11"):
-            fdef.update({"type": "Range (0-10)", "min": 0, "max": 10, "float": False, "precision": 0})
-        elif fld_l == "unit" or fld_l.endswith("_unit"):
-            options = _parse_enum_values(vals_raw)
-            if not options:
-                options = ["kg", "lb", "cm", "in", "pc"]
-            fdef.update({"type": "Custom Enum",
-                         "values_raw": ",".join(options),
-                         "enum_mode": "Random", "weights_raw": ""})
-        else:
-            # Fallback: treat as Custom Text (safe default)
-            fdef.update({"type": "Custom Text"})
-
-        schema.append(fdef)
-
+        if r not in cols:
+            raise ValueError(f"Missing required column: '{r}'")
+    name_c = cols["name"]
+    field_c = cols["field"]
+    values_c = cols["values"]
+    schema: List[Dict[str, Any]] = []
+    for _, row in upload_df.iterrows():
+        name = row.get(name_c, "")
+        field_code = row.get(field_c, "")
+        values = row.get(values_c, "")
+        schema.append(map_row_to_field(name, field_code, values))
     return schema
+
+def read_uploaded_schema(file) -> pd.DataFrame:
+    if file is None:
+        return None
+    name = file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(file)
+    # default to excel for other cases
+    return pd.read_excel(file)
 
 # --- UI ---
 st.set_page_config(page_title="Custom Dummy Data Generator", layout="wide")
 st.title("📊 Custom Dummy Data Generator")
-st.markdown("Generate dummy data with sequential dates allowing multiple entries per date, or **paste a CSV schema** to auto-build fields.")
+st.markdown("Generate dummy data with manual fields **or** from an uploaded CSV/XLSX schema (columns: **Name, field, values**).")
 
 st.sidebar.header("⚙️ Settings")
 rows = st.sidebar.slider("Number of rows", 10, 100000, 100, step=10)
@@ -454,33 +464,13 @@ if use_global_timeline:
     else:
         global_timeline = {"start_date": pd.to_datetime(gstart), "end_date": pd.to_datetime(gend)}
 
-# ---------- NEW: CSV schema input ----------
-st.sidebar.subheader("📥 CSV schema (paste here)")
-csv_text = st.sidebar.text_area(
-    "Paste CSV with columns: Name, field, values",
-    value="",
-    help="Example row: Name,field,values  →  Product,_enum,Alpha,Beta,Gamma",
-    height=150,
-    key="csv_schema_text",
-)
-use_csv_schema = False
-csv_schema = []
+# ==========================
+# NEW: Upload schema section
+# ==========================
+st.sidebar.subheader("📄 Upload schema (CSV/XLSX)")
+uploaded_file = st.sidebar.file_uploader("Schema file with columns: Name, field, values", type=["csv", "xlsx", "xls"])
 
-if st.sidebar.button("Load schema from CSV", type="primary", use_container_width=True):
-    if not csv_text.strip():
-        st.sidebar.error("Please paste CSV text first.")
-    else:
-        try:
-            csv_schema = parse_csv_schema(csv_text.strip())
-            use_csv_schema = True
-            st.sidebar.success(f"Loaded {len(csv_schema)} fields from CSV.")
-        except Exception as e:
-            st.sidebar.error(f"CSV parse error: {e}")
-
-st.sidebar.subheader("🛠️ Add Custom Fields (manual builder)")
-num_fields = st.sidebar.number_input("Number of fields", 1, 40, 4)
-
-schema = []
+schema: List[Dict[str, Any]] = []
 type_options = list(FIELD_TYPES.keys())
 
 EMOJI = {
@@ -514,10 +504,23 @@ DEFAULT_FIELD_ORDER = [
     ("LTR", "Conditional Range (Based on Comment Sentiment)"),
 ]
 
-# If CSV schema is loaded, we skip manual builder and use csv_schema.
-if use_csv_schema and csv_schema:
-    schema = csv_schema
+# If a schema file is uploaded, build schema from it; else use manual builder
+if uploaded_file:
+    try:
+        upload_df = read_uploaded_schema(uploaded_file)
+        parsed_schema = build_schema_from_dataframe(upload_df)
+        schema = parsed_schema
+
+        with st.expander("🔍 Parsed schema (from file)", expanded=False):
+            st.dataframe(pd.DataFrame(schema))
+
+    except Exception as e:
+        st.error(f"Failed to read/parse schema: {e}")
+        st.stop()
 else:
+    st.sidebar.subheader("🛠️ Add Custom Fields (manual)")
+    num_fields = st.sidebar.number_input("Number of fields", 1, 40, 4)
+
     for i in range(num_fields):
         with st.sidebar.expander(f"Field {i+1}", expanded=(i < 6)):
             col1, col2 = st.columns([2, 2])
@@ -529,7 +532,11 @@ else:
             with col1:
                 field_name = st.text_input("Name", value=default_name, key=f"name_{i}")
 
-            default_type_index = type_options.index(default_type) if default_type in type_options else min(i, len(type_options) - 1)
+            if default_type and default_type in type_options:
+                default_type_index = type_options.index(default_type)
+            else:
+                default_type_index = min(i, len(type_options) - 1)
+
             with col2:
                 field_type = st.selectbox("Type", options=type_options, index=default_type_index, key=f"type_{i}")
 
@@ -560,8 +567,7 @@ else:
                 field_def.update({"value": const_val})
 
             if field_type == "Custom Enum":
-                vals = st.text_area("Enum values (comma-separated)", value="A,B,C",
-                                    help="Enter values separated by commas, e.g. red, green, blue", key=f"enum_vals_{i}")
+                vals = st.text_area("Enum values (comma-separated)", value="A,B,C", help="Enter values separated by commas, e.g. red, green, blue", key=f"enum_vals_{i}")
                 mode = st.selectbox("Mode", options=["Random", "Cycle"], index=0, key=f"enum_mode_{i}")
                 weights = st.text_input("Optional weights (comma-separated, same length as values) — leave empty for uniform", value="", key=f"enum_weights_{i}")
                 st.caption("Random: picks one value per row at random (weights respected). Cycle: round-robin across rows.")
@@ -668,24 +674,6 @@ else:
 # Generate dataset
 df = generate_dummy_data(rows, schema, global_timeline=global_timeline)
 
-# If we loaded CSV schema, briefly show the interpreted mapping
-if use_csv_schema and csv_schema:
-    st.subheader("CSV schema mapping (interpreted)")
-    show_cols = []
-    for f in csv_schema:
-        row = {"Name": f.get("name"), "Type": f.get("type")}
-        # light preview of params
-        if f.get("type") == "Custom Enum":
-            row["Values"] = f.get("values_raw", "")
-        elif f.get("type") == "Unique ID (Sequential)":
-            row["Start/Step/Pad"] = f"{f.get('start',1)}/{f.get('step',1)}/{f.get('pad_zeros',3)}"
-        elif f.get("type") == "Range (0-10)":
-            row["Min..Max"] = f"{f.get('min',0)}..{f.get('max',10)}"
-        elif f.get("type") == "Comment (Sentiment)":
-            row["Sentiment"] = f.get("sentiment","Random")
-        show_cols.append(row)
-    st.dataframe(pd.DataFrame(show_cols), use_container_width=True)
-
 # Show preview
 st.subheader(f"Preview of {rows} rows")
 st.dataframe(df, use_container_width=True)
@@ -694,7 +682,6 @@ st.dataframe(df, use_container_width=True)
 towrite = io.BytesIO()
 df.to_excel(towrite, index=False, engine="openpyxl")
 towrite.seek(0)
-
 st.download_button(
     label="📥 Download Excel File",
     data=towrite,
