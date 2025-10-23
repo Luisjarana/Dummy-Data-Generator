@@ -237,7 +237,6 @@ def ft_label(lang: str, code: str) -> str:
         "cenum": "Custom Enum",
         "genum": "Grouped Enum",
     }
-    # (Optional) translate labels if you later add localized labels.
     return mapping.get(code, code)
 
 EMOJI = {
@@ -248,10 +247,9 @@ EMOJI = {
     "const": "🔒", "cenum": "🧩", "genum": "🧩👥",
 }
 
-# Reverse label → code (to migrate legacy items that stored 'type' as a label)
+# Reverse label → code (for legacy migration)
 LABEL_TO_CODE = {ft_label("en", c): c for c in FT_CODES}
-# Also accept raw codes as labels just in case
-LABEL_TO_CODE.update({c: c for c in FT_CODES})
+LABEL_TO_CODE.update({c: c for c in FT_CODES})  # accept raw codes too
 
 # ==============
 # Streamlit page
@@ -466,7 +464,16 @@ def _random_time():
 def _clear_schema_search():
     st.session_state["schema_search"] = ""
 
-# ---------- NEW: migration helpers (fixes your dropdown mismatch) ----------
+# ---------- NEW: bound select helper ----------
+def _select_bound(ui, *, key: str, options: list, current, label: str, format_func=None):
+    """Selectbox bound to session_state[key]. Seeds to 'current' when missing/invalid."""
+    # If options are dynamic (e.g., depends_on), keep a copy to validate
+    if key not in st.session_state or st.session_state[key] not in options:
+        # Seed with current if valid, else first option (or None)
+        st.session_state[key] = current if current in options else (options[0] if options else None)
+    return ui.selectbox(label, options=options, key=key, format_func=format_func)
+
+# ---------- migration helpers (fixes dropdown mismatch) ----------
 def _ensure_uid(item: Dict[str, Any]) -> None:
     if "_uid" not in item or not item["_uid"]:
         item["_uid"] = str(uuid.uuid4())
@@ -475,14 +482,11 @@ def _migrate_type_to_ft(item: Dict[str, Any]) -> None:
     """Normalize an item to have 'ft' code; accept legacy 'type' labels/codes."""
     if "ft" in item and item["ft"] in FT_CODES:
         return
-    # Legacy path: 'type' exists (label or code)
     legacy_type = item.get("type")
     if isinstance(legacy_type, str):
         code = LABEL_TO_CODE.get(legacy_type.strip(), None)
         if code is None:
-            # try a few known alternates
             alt = legacy_type.strip().lower()
-            # very rough fallbacks
             if alt in ["unique id (sequential)", "sequential id", "id seq", "unique id"]:
                 code = "seq"
             elif alt in ["unique id (uuid)", "uuid"]:
@@ -527,7 +531,6 @@ def _migrate_type_to_ft(item: Dict[str, Any]) -> None:
             item["ft"] = code
             item.pop("type", None)
             return
-    # If still nothing, default to ctext
     item["ft"] = "ctext"
     item.pop("type", None)
 
@@ -539,7 +542,6 @@ def _normalize_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         _migrate_type_to_ft(it)
         out.append(it)
     return out
-# ---------------------------------------------------------------------------
 
 # =========================
 # CSV → app schema mapping
@@ -878,7 +880,6 @@ if uploaded_file:
     try:
         upload_df = read_uploaded_schema(uploaded_file)
         parsed_schema = build_schema_from_dataframe(upload_df)
-        # normalize new items (add _uid, convert 'type'→'ft' if any)
         parsed_schema = _normalize_items(parsed_schema)
         if st.session_state.schema_loaded_name != uploaded_file.name:
             st.session_state.schema_items = parsed_schema
@@ -913,14 +914,14 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
             else:
                 item["name"] = ui.text_input(t(lang,"name"), value=item.get("name", f"{t(lang,'field_label')} {idx+1}"), key=f"name_{uid}")
         with top[1]:
-            # Select by CODE (stable), show label
-            current_code = item.get("ft", "ctext")
-            item["ft"] = ui.selectbox(
-                t(lang, "type"),
+            # ✅ Bound selectbox for Type
+            item["ft"] = _select_bound(
+                ui,
+                key=f"type_{uid}",
                 options=FT_CODES,
-                index=FT_CODES.index(current_code) if current_code in FT_CODES else FT_CODES.index("ctext"),
+                current=item.get("ft", "ctext"),
+                label=t(lang, "type"),
                 format_func=lambda c: ft_label(lang, c),
-                key=f"type_{uid}"
             )
         with top[2]:
             if ui.button("🗑️", key=f"del_{uid}", help=t(lang,"delete"), use_container_width=True):
@@ -948,7 +949,10 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
 
         if ft == "cenum":
             item["values_raw"] = ui.text_area(t(lang,"enum_values"), value=item.get("values_raw", "A,B,C"), key=f"enum_vals_{uid}")
-            item["enum_mode"] = ui.selectbox(t(lang,"enum_mode"), options=["Random", "Cycle"], index=0 if item.get("enum_mode","Random")=="Random" else 1, key=f"enum_mode_{uid}")
+            item["enum_mode"] = _select_bound(
+                ui, key=f"enum_mode_{uid}", options=["Random","Cycle"],
+                current=item.get("enum_mode","Random"), label=t(lang,"enum_mode")
+            )
             item["weights_raw"] = ui.text_input(t(lang,"enum_weights"), value=item.get("weights_raw", ""), key=f"enum_weights_{uid}")
             ui.caption(t(lang,"enum_note"))
 
@@ -960,7 +964,10 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
                                value="; ".join(["|".join(g) for g in item.get("group_values", [["Acme","A001"],["Beta","B002"]])]),
                                key=f"group_values_{uid}", help=t(lang,"grouped_values_help"))
             item["group_values"] = _parse_grouped_values(gv)
-            item["enum_mode"] = ui.selectbox(t(lang,"enum_mode"), options=["Random","Cycle"], index=0 if item.get("enum_mode","Random")=="Random" else 1, key=f"group_mode_{uid}")
+            item["enum_mode"] = _select_bound(
+                ui, key=f"group_mode_{uid}", options=["Random","Cycle"],
+                current=item.get("enum_mode","Random"), label=t(lang,"enum_mode")
+            )
             item["weights_raw"] = ui.text_input(t(lang,"grouped_weights"), value=item.get("weights_raw",""), key=f"group_weights_{uid}")
             if item["group_values"] and item["group_fields"] and not all(len(g)==len(item["group_fields"]) for g in item["group_values"]):
                 ui.warning(t(lang,"grouped_warn"))
@@ -976,37 +983,47 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
             ui.caption(t(lang,"date_note"))
 
         if ft == "comment":
-            item["sentiment"] = ui.selectbox(t(lang,"sentiment"),
-                                             options=["Random", "Positive", "Neutral", "Negative"],
-                                             index=["Random","Positive","Neutral","Negative"].index(item.get("sentiment","Random")),
-                                             key=f"sent_{uid}")
+            item["sentiment"] = _select_bound(
+                ui, key=f"sent_{uid}",
+                options=["Random","Positive","Neutral","Negative"],
+                current=item.get("sentiment","Random"),
+                label=t(lang,"sentiment")
+            )
             ui.markdown(t(lang,"trend_title"))
             item["trend_enabled"] = bool(ui.checkbox(t(lang,"trend_enable"), value=bool(item.get("trend_enabled", False)), key=f"trend_enabled_{uid}"))
             if item["trend_enabled"]:
-                item["timeline_source"] = ui.selectbox(t(lang,"timeline_source"), options=["Global timeline", "Date field"],
-                                                       index=0 if item.get("timeline_source","Global timeline")=="Global timeline" else 1,
-                                                       key=f"tl_src_{uid}")
+                item["timeline_source"] = _select_bound(
+                    ui, key=f"tl_src_{uid}",
+                    options=["Global timeline","Date field"],
+                    current=item.get("timeline_source","Global timeline"),
+                    label=t(lang,"timeline_source")
+                )
                 if item["timeline_source"] == "Date field":
                     item["timeline_date_field"] = ui.text_input(t(lang,"date_field_name"), value=item.get("timeline_date_field",""), key=f"df_ref_{uid}")
-                item["trend_type"] = ui.selectbox("Trend type", options=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")],
-                                                  index=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")].index(item.get("trend_type", t(lang,"trend_inc"))),
-                                                  key=f"trend_type_{uid}")
+                item["trend_type"] = _select_bound(
+                    ui, key=f"trend_type_{uid}",
+                    options=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")],
+                    current=item.get("trend_type", t(lang,"trend_inc")),
+                    label="Trend type"
+                )
                 item["trend_strength"] = float(ui.slider(t(lang,"trend_strength"), 0.0, 1.0, float(item.get("trend_strength", 0.5)), step=0.01, key=f"trend_strength_{uid}"))
-                item["base_preset"] = ui.selectbox(t(lang,"base_dist"),
-                                                   options=[ "Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"],
-                                                   index=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"].index(item.get("base_preset","Balanced")),
-                                                   key=f"base_preset_{uid}")
+                item["base_preset"] = _select_bound(
+                    ui, key=f"base_preset_{uid}",
+                    options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"],
+                    current=item.get("base_preset","Balanced"),
+                    label=t(lang,"base_dist")
+                )
 
         if ft == "cond_range":
             ui.markdown(t(lang,"depends_on"))
             if all_comment_names:
-                default_name = item.get("depends_on", all_comment_names[0])
-                try:
-                    default_idx = all_comment_names.index(default_name)
-                except ValueError:
-                    default_idx = 0
-                sel = ui.selectbox("Comment field", options=all_comment_names, index=default_idx, key=f"cr_dep_sel_{uid}")
-                item["depends_on"] = sel
+                current_dep = item.get("depends_on", all_comment_names[0] if all_comment_names else "")
+                item["depends_on"] = _select_bound(
+                    ui, key=f"cr_dep_sel_{uid}",
+                    options=all_comment_names,
+                    current=current_dep,
+                    label="Comment field"
+                )
             else:
                 ui.info(t(lang,"no_comments"))
                 item["depends_on"] = ui.text_input("Comment field", value=item.get("depends_on",""), key=f"cr_dep_txt_{uid}")
@@ -1030,8 +1047,7 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
     return "OK"
 
 # Build editor if CSV uploaded; else manual builder
-if uploaded_file is not None:
-    schema_from_upload_mode = True
+schema_from_upload_mode = bool(uploaded_file)
 
 if schema_from_upload_mode:
     st.sidebar.subheader(t(lang, "csv_fields"))
@@ -1101,9 +1117,14 @@ else:
                 field_name = st.text_input(t(lang,"name"), value=default_name, key=f"name_{i}")
 
             with col2:
-                ft_code = st.selectbox(t(lang,"type"), options=FT_CODES,
-                                       index=FT_CODES.index(default_code) if default_code in FT_CODES else FT_CODES.index("ctext"),
-                                       format_func=lambda c: ft_label(lang, c), key=f"type_{i}")
+                # Bound selectbox for manual builder type too
+                ft_key = f"type_{i}"
+                if ft_key not in st.session_state:
+                    st.session_state[ft_key] = default_code
+                ft_code = _select_bound(
+                    st, key=ft_key, options=FT_CODES, current=st.session_state[ft_key],
+                    label=t(lang,"type"), format_func=lambda c: ft_label(lang, c)
+                )
 
             st.markdown(f"**{EMOJI.get(ft_code,'')} {field_name or default_name} — _{ft_label(lang, ft_code)}_**")
             field_def = {"ft": ft_code}
@@ -1111,7 +1132,11 @@ else:
             if ft_code == "genum":
                 gf = st.text_input(t(lang,"grouped_fields"), value=f"{(field_name or default_name)}_name|{(field_name or default_name)}_id", key=f"m_group_fields_{i}")
                 gv = st.text_area(t(lang,"grouped_values"), value="Acme|A001; Beta|B002", key=f"m_group_values_{i}")
-                mode = st.selectbox(t(lang,"enum_mode"), options=["Random", "Cycle"], index=0, key=f"m_group_mode_{i}")
+                # Bound 'mode'
+                gm_key = f"m_group_mode_{i}"
+                if gm_key not in st.session_state:
+                    st.session_state[gm_key] = "Random"
+                mode = _select_bound(st, key=gm_key, options=["Random","Cycle"], current=st.session_state[gm_key], label=t(lang,"enum_mode"))
                 weights = st.text_input(t(lang,"grouped_weights"), value="", key=f"m_group_weights_{i}")
                 field_def.update({
                     "group_fields": [s.strip() for s in gf.split("|") if s.strip()!=""],
@@ -1146,7 +1171,10 @@ else:
 
             if ft_code == "cenum":
                 vals = st.text_area(t(lang,"enum_values"), value="A,B,C", key=f"enum_vals_{i}")
-                mode = st.selectbox(t(lang,"enum_mode"), options=["Random", "Cycle"], index=0, key=f"enum_mode_{i}")
+                em_key = f"enum_mode_{i}"
+                if em_key not in st.session_state:
+                    st.session_state[em_key] = "Random"
+                mode = _select_bound(st, key=em_key, options=["Random","Cycle"], current=st.session_state[em_key], label=t(lang,"enum_mode"))
                 weights = st.text_input(t(lang,"enum_weights"), value="", key=f"enum_weights_{i}")
                 st.caption(t(lang,"enum_note"))
                 field_def.update({"values_raw": vals, "enum_mode": mode, "weights_raw": weights})
@@ -1165,39 +1193,47 @@ else:
                 st.caption(t(lang,"date_note"))
 
             if ft_code == "comment":
-                sentiment = st.selectbox(t(lang,"sentiment"), options=["Random", "Positive", "Neutral", "Negative"], index=0, key=f"sentiment_{i}")
+                s_key = f"sentiment_{i}"
+                if s_key not in st.session_state:
+                    st.session_state[s_key] = "Random"
+                sentiment = _select_bound(st, key=s_key, options=["Random","Positive","Neutral","Negative"], current=st.session_state[s_key], label=t(lang,"sentiment"))
                 field_def["sentiment"] = sentiment
                 st.markdown(t(lang,"trend_title"))
                 trend_enabled = st.checkbox(t(lang,"trend_enable"), value=False, key=f"trend_enabled_{i}")
                 field_def["trend_enabled"] = trend_enabled
 
                 if trend_enabled:
-                    tl_source = st.selectbox(t(lang,"timeline_source"), options=["Global timeline", "Date field"], key=f"tl_src_{i}")
+                    tls_key = f"tl_src_{i}"
+                    if tls_key not in st.session_state:
+                        st.session_state[tls_key] = "Global timeline"
+                    tl_source = _select_bound(st, key=tls_key, options=["Global timeline", "Date field"], current=st.session_state[tls_key], label=t(lang,"timeline_source"))
                     field_def["timeline_source"] = tl_source
                     if tl_source == "Date field":
-                        date_field_options = [f["name"] for f in schema if f.get("ft") in ["date", "date_seq"]]
-                        if date_field_options:
-                            chosen_df = st.selectbox(t(lang,"date_field_name"), options=date_field_options + ["(manual)"], key=f"df_choice_{i}")
-                            if chosen_df == "(manual)":
-                                date_field_ref = st.text_input(t(lang,"date_field_name"), value="", key=f"df_manual_{i}")
-                            else:
-                                date_field_ref = chosen_df
-                        else:
-                            date_field_ref = st.text_input(t(lang,"date_field_name"), value="", key=f"df_manual_{i}")
+                        date_field_ref = st.text_input(t(lang,"date_field_name"), value="", key=f"df_manual_{i}")
                         field_def["timeline_date_field"] = date_field_ref
 
-                    trend_type = st.selectbox("Trend type", options=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")], key=f"trend_type_{i}")
+                    tt_key = f"trend_type_{i}"
+                    if tt_key not in st.session_state:
+                        st.session_state[tt_key] = t(lang,"trend_inc")
+                    trend_type = _select_bound(st, key=tt_key, options=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")], current=st.session_state[tt_key], label="Trend type")
                     trend_strength = st.slider(t(lang,"trend_strength"), 0.0, 1.0, 0.5, step=0.01, key=f"trend_strength_{i}")
                     field_def["trend_type"] = trend_type
                     field_def["trend_strength"] = float(trend_strength)
 
-                    base_preset = st.selectbox(t(lang,"base_dist"), options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], key=f"base_preset_{i}")
+                    bp_key = f"base_preset_{i}"
+                    if bp_key not in st.session_state:
+                        st.session_state[bp_key] = "Balanced"
+                    base_preset = _select_bound(st, key=bp_key, options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], current=st.session_state[bp_key], label=t(lang,"base_dist"))
                     field_def["base_preset"] = base_preset
 
             if ft_code == "cond_range":
+                # collect comment fields up to now
                 comment_field_options = [f["name"] for f in schema if f.get("ft") == "comment"]
                 if comment_field_options:
-                    depends_on = st.selectbox("Depends on", options=comment_field_options, index=0, key=f"cr_dep_choice_{i}")
+                    dep_key = f"cr_dep_choice_{i}"
+                    if dep_key not in st.session_state:
+                        st.session_state[dep_key] = comment_field_options[0]
+                    depends_on = _select_bound(st, key=dep_key, options=comment_field_options, current=st.session_state[dep_key], label="Depends on")
                 else:
                     st.info(t(lang,"no_comments"))
                     depends_on = st.text_input("Comment field", value="", key=f"cr_dep_manual_{i}")
@@ -1312,11 +1348,17 @@ st.caption(t(lang, "templates_caption"))
 # ================
 # Generate & show
 # ================
-schema_to_use = schema
+schema_to_use = schema_from_upload_mode and [{k: v for k, v in it.items() if k != "_uid"} for it in st.session_state.schema_items] or schema
 df = generate_dummy_data(rows, schema_to_use, global_timeline=global_timeline)
 
 # ✅ Format date columns as "mm/dd/yyyy, %I:%M %p"
-date_fields = [f.get("name") for f in schema_to_use if f.get("ft") in ["date", "date_seq"]]
+date_fields = []
+for f in schema_to_use:
+    if f.get("ft") == "genum":
+        continue
+    if f.get("ft") in ["date", "date_seq"]:
+        date_fields.append(f.get("name"))
+
 df_fmt = df.copy()
 for col in date_fields:
     if col in df_fmt.columns:
