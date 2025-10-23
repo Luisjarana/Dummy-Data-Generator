@@ -104,58 +104,6 @@ I18N = {
         "base_pos": "Positive-heavy",
         "base_neu": "Neutral-heavy",
         "base_neg": "Negative-heavy",
-        "sent_random": "Random",
-        "sent_positive": "Positive",
-        "sent_neutral": "Neutral",
-        "sent_negative": "Negative",
-        "field_types": {
-            "seq": "Unique ID (Sequential)",
-            "uuid": "Unique ID (UUID)",
-            "full": "Full Name",
-            "first": "First Name",
-            "last": "Last Name",
-            "email": "Email",
-            "phone": "Phone",
-            "address": "Address",
-            "company": "Company",
-            "age": "Age",
-            "job": "Job Title",
-            "country": "Country",
-            "date": "Date",
-            "date_seq": "Date (Sequential)",
-            "ctext": "Custom Text",
-            "cnum": "Custom Number",
-            "range": "Range (0-10)",
-            "comment": "Comment (Sentiment)",
-            "cond_range": "Conditional Range (Based on Comment Sentiment)",
-            "const": "Constant",
-            "cenum": "Custom Enum",
-            "genum": "Grouped Enum",
-        },
-        "emojis": {
-            "seq": "🔢",
-            "uuid": "🆔",
-            "full": "👤",
-            "first": "👤",
-            "last": "👤",
-            "email": "✉️",
-            "phone": "📞",
-            "address": "🏠",
-            "company": "🏢",
-            "age": "🎂",
-            "job": "💼",
-            "country": "🌍",
-            "date": "📅",
-            "date_seq": "📆",
-            "ctext": "📝",
-            "cnum": "🔣",
-            "range": "📏",
-            "comment": "💬",
-            "cond_range": "🎯",
-            "const": "🔒",
-            "cenum": "🧩",
-            "genum": "🧩👥",
-        }
     },
     "es": {
         "app_title": "📊 Generador de Datos Ficticios",
@@ -249,58 +197,6 @@ I18N = {
         "base_pos": "Positiva",
         "base_neu": "Neutral",
         "base_neg": "Negativa",
-        "sent_random": "Aleatorio",
-        "sent_positive": "Positivo",
-        "sent_neutral": "Neutral",
-        "sent_negative": "Negativo",
-        "field_types": {  # labels only; underlying logic unchanged
-            "seq": "Unique ID (Sequential)",
-            "uuid": "Unique ID (UUID)",
-            "full": "Full Name",
-            "first": "First Name",
-            "last": "Last Name",
-            "email": "Email",
-            "phone": "Phone",
-            "address": "Address",
-            "company": "Company",
-            "age": "Age",
-            "job": "Job Title",
-            "country": "Country",
-            "date": "Date",
-            "date_seq": "Date (Sequential)",
-            "ctext": "Custom Text",
-            "cnum": "Custom Number",
-            "range": "Range (0-10)",
-            "comment": "Comment (Sentiment)",
-            "cond_range": "Conditional Range (Based on Comment Sentiment)",
-            "const": "Constant",
-            "cenum": "Custom Enum",
-            "genum": "Grouped Enum",
-        },
-        "emojis": {
-            "seq": "🔢",
-            "uuid": "🆔",
-            "full": "👤",
-            "first": "👤",
-            "last": "👤",
-            "email": "✉️",
-            "phone": "📞",
-            "address": "🏠",
-            "company": "🏢",
-            "age": "🎂",
-            "job": "💼",
-            "country": "🌍",
-            "date": "📅",
-            "date_seq": "📆",
-            "ctext": "📝",
-            "cnum": "🔣",
-            "range": "📏",
-            "comment": "💬",
-            "cond_range": "🎯",
-            "const": "🔒",
-            "cenum": "🧩",
-            "genum": "🧩👥",
-        }
     }
 }
 
@@ -308,60 +204,127 @@ def t(lang: str, key: str) -> str:
     return I18N.get(lang, I18N["en"]).get(key, I18N["en"].get(key, key))
 
 # =========================
-# Streamlit page configure
+# Stable field type codes
 # =========================
+# We store 'ft' = one of these codes in session & schema; UI shows localized labels.
+FT_CODES = [
+    "seq", "uuid", "full", "first", "last", "email", "phone", "address", "company",
+    "age", "job", "country", "date", "date_seq", "ctext", "cnum",
+    "range", "comment", "cond_range", "const", "cenum", "genum"
+]
+
+# Labels/emojis per code (language-aware for labels)
+def ft_label(lang: str, code: str) -> str:
+    L = I18N[lang]
+    mapping = {
+        "seq": "Unique ID (Sequential)",
+        "uuid": "Unique ID (UUID)",
+        "full": "Full Name",
+        "first": "First Name",
+        "last": "Last Name",
+        "email": "Email",
+        "phone": "Phone",
+        "address": "Address",
+        "company": "Company",
+        "age": "Age",
+        "job": "Job Title",
+        "country": "Country",
+        "date": "Date",
+        "date_seq": "Date (Sequential)",
+        "ctext": "Custom Text",
+        "cnum": "Custom Number",
+        "range": "Range (0-10)",
+        "comment": "Comment (Sentiment)",
+        "cond_range": "Conditional Range (Based on Comment Sentiment)",
+        "const": "Constant",
+        "cenum": "Custom Enum",
+        "genum": "Grouped Enum",
+    }
+    # Use English labels from i18n “field_types” in older code if desired.
+    # For simplicity we keep labels in English/Spanish pairs above:
+    if lang == "es":
+        trans = {
+            "Unique ID (Sequential)": "Unique ID (Sequential)",
+            "Unique ID (UUID)": "Unique ID (UUID)",
+            "Full Name": "Full Name",
+            "First Name": "First Name",
+            "Last Name": "Last Name",
+            "Email": "Email",
+            "Phone": "Phone",
+            "Address": "Address",
+            "Company": "Company",
+            "Age": "Age",
+            "Job Title": "Job Title",
+            "Country": "Country",
+            "Date": "Date",
+            "Date (Sequential)": "Date (Sequential)",
+            "Custom Text": "Custom Text",
+            "Custom Number": "Custom Number",
+            "Range (0-10)": "Range (0-10)",
+            "Comment (Sentiment)": "Comment (Sentiment)",
+            "Conditional Range (Based on Comment Sentiment)": "Conditional Range (Based on Comment Sentiment)",
+            "Constant": "Constant",
+            "Custom Enum": "Custom Enum",
+            "Grouped Enum": "Grouped Enum",
+        }
+        return trans.get(mapping.get(code, code), mapping.get(code, code))
+    return mapping.get(code, code)
+
+EMOJI = {
+    "seq": "🔢", "uuid": "🆔", "full": "👤", "first": "👤", "last": "👤",
+    "email": "✉️", "phone": "📞", "address": "🏠", "company": "🏢",
+    "age": "🎂", "job": "💼", "country": "🌍", "date": "📅", "date_seq": "📆",
+    "ctext": "📝", "cnum": "🔣", "range": "📏", "comment": "💬", "cond_range": "🎯",
+    "const": "🔒", "cenum": "🧩", "genum": "🧩👥",
+}
+
+# ==============
+# Streamlit page
+# ==============
 st.set_page_config(page_title="Custom Dummy Data Generator", layout="wide")
 
-# Language picker (persist)
+# Language
 if "lang" not in st.session_state:
     st.session_state.lang = "en"
-st.sidebar.selectbox("Language / Idioma", options=["en", "es"], index=0 if st.session_state.lang=="en" else 1, key="lang")
-
+st.sidebar.selectbox("Language / Idioma", options=["en", "es"],
+                     index=0 if st.session_state.lang=="en" else 1, key="lang")
 lang = st.session_state.lang
+
 st.title(t(lang, "app_title"))
 st.markdown(t(lang, "app_desc"))
 
-# Initialize Faker per language
+# Faker per language
 FAKER_LOCALE = "en_US" if lang == "en" else "es_MX"
 fake = Faker(FAKER_LOCALE)
 
-# =========================
-# Field types / labels
-# =========================
-FT = I18N[lang]["field_types"]
-EMOJI = I18N[lang]["emojis"]
-
-def get_field_types(fake: Faker):
-    return {
-        FT["seq"]: None,  # Unique ID (Sequential)
-        FT["uuid"]: lambda: str(uuid.uuid4()),
-        FT["full"]: lambda: fake.name(),
-        FT["first"]: lambda: fake.first_name(),
-        FT["last"]: lambda: fake.last_name(),
-        FT["email"]: lambda: fake.email(),
-        FT["phone"]: lambda: fake.phone_number(),
-        FT["address"]: lambda: fake.address().replace("\n", ", "),
-        FT["company"]: lambda: fake.company(),
-        FT["age"]: lambda: random.randint(18, 70),
-        FT["job"]: lambda: fake.job(),
-        FT["country"]: lambda: fake.country(),
-        # Use datetime (with time) instead of date-only
-        FT["date"]: lambda: fake.date_time_between(start_date="-5y", end_date="now"),
-        FT["date_seq"]: None,
-        FT["ctext"]: lambda: fake.word(),
-        FT["cnum"]: lambda: random.randint(1000, 9999),
-        FT["range"]: None,
-        FT["comment"]: None,
-        FT["cond_range"]: None,
-        FT["const"]: None,
-        FT["cenum"]: None,
-        FT["genum"]: None,
-    }
-
-FIELD_TYPES = get_field_types(fake)
+# Generators by type code
+FIELD_GEN = {
+    "seq": None,
+    "uuid": lambda: str(uuid.uuid4()),
+    "full": lambda: fake.name(),
+    "first": lambda: fake.first_name(),
+    "last": lambda: fake.last_name(),
+    "email": lambda: fake.email(),
+    "phone": lambda: fake.phone_number(),
+    "address": lambda: fake.address().replace("\n", ", "),
+    "company": lambda: fake.company(),
+    "age": lambda: random.randint(18, 70),
+    "job": lambda: fake.job(),
+    "country": lambda: fake.country(),
+    "date": lambda: fake.date_time_between(start_date="-5y", end_date="now"),  # datetime
+    "date_seq": None,
+    "ctext": lambda: fake.word(),
+    "cnum": lambda: random.randint(1000, 9999),
+    "range": None,
+    "comment": None,
+    "cond_range": None,
+    "const": None,
+    "cenum": None,
+    "genum": None,
+}
 
 # =========================
-# Sentiment comment pools
+# Comment pools (localized)
 # =========================
 if lang == "en":
     COMMENTS_POSITIVE = [
@@ -409,7 +372,7 @@ else:
     ]
 
 # =========================
-# Utilities
+# Helpers
 # =========================
 def _clamp(x, a=0.0, b=1.0):
     return max(a, min(b, x))
@@ -420,7 +383,7 @@ def _normalize_probs(p):
         return [1/3, 1/3, 1/3]
     return [x / s for x in p]
 
-def _apply_trend(base_probs, time_factor, trend_type, strength, lang):
+def _apply_trend(base_probs, time_factor, trend_type, strength):
     pos, neu, neg = base_probs
     if trend_type == t(lang, "trend_inc"):
         pos = pos + strength * time_factor * (1 - pos)
@@ -431,16 +394,17 @@ def _apply_trend(base_probs, time_factor, trend_type, strength, lang):
         neg = neg + strength * time_factor * (1 - neg)
         neu = 1 - pos - neg
     elif trend_type == t(lang, "trend_cyc"):
-        cyc = math.sin(2 * math.pi * time_factor)
+        import math as _m
+        cyc = _m.sin(2 * _m.pi * time_factor)
         pos = pos + strength * (cyc * 0.5)
         pos = _clamp(pos, 0.01, 0.99)
         remain = 1 - pos
-        base_pair_sum = neu + neg
-        if base_pair_sum == 0:
+        pair_sum = neu + neg
+        if pair_sum == 0:
             neu = neg = remain / 2
         else:
-            neu = remain * (neu / base_pair_sum)
-            neg = remain * (neg / base_pair_sum)
+            neu = remain * (neu / pair_sum)
+            neg = remain * (neg / pair_sum)
     elif trend_type == t(lang, "trend_jit"):
         pos = pos + random.gauss(0, 0.1 * strength)
         neu = neu + random.gauss(0, 0.1 * strength)
@@ -521,10 +485,16 @@ def _safe_str(x: Any) -> str:
     except Exception:
         return ""
 
+def _random_time():
+    return time(random.randrange(0,24), random.randrange(0,60))
+
+def _clear_schema_search():
+    st.session_state["schema_search"] = ""
+
 # =========================
 # CSV → app schema mapping
 # =========================
-def map_row_to_field(name: str, field_code: str, values: str, lang: str) -> Dict[str, Any]:
+def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
     """
     If 'values' is non-empty -> enum (Grouped if '|' present in Name or values).
     Otherwise use suffix rules:
@@ -537,54 +507,52 @@ def map_row_to_field(name: str, field_code: str, values: str, lang: str) -> Dict
       *_cmt -> Comment
       *_scale11 -> Range (0-10)
       default -> Custom Text
+    Returns a dict with 'ft' (type code). Grouped Enum has no single 'name', it has 'group_fields'.
     """
     n_raw = _safe_str(name).strip() or "Field"
     f = _safe_lower(field_code)
     v = _safe_str(values).strip()
 
-    # Force enum if any value is present
+    # Force enum if values present
     if v:
         if ("|" in n_raw) or ("|" in v):
             group_fields = [s.strip() for s in n_raw.split("|") if s.strip() != ""]
             grouped = _parse_grouped_values(v)
             if group_fields and all(len(g) == len(group_fields) for g in grouped):
                 return {
-                    "type": FT["genum"],
+                    "ft": "genum",
                     "group_fields": group_fields,
                     "group_values": grouped,
-                    "enum_mode": t(lang, "mode_random"),
+                    "enum_mode": "Random",
                     "weights_raw": "",
+                    "_uid": str(uuid.uuid4()),
                 }
             # Fallback to single-field enum
-            enum_vals = _parse_enum_values(v)
-            return {"name": n_raw, "type": FT["cenum"], "values_raw": ",".join(enum_vals),
-                    "enum_mode": t(lang, "mode_random"), "weights_raw": ""}
-
         enum_vals = _parse_enum_values(v)
-        return {"name": n_raw, "type": FT["cenum"], "values_raw": ",".join(enum_vals),
-                "enum_mode": t(lang, "mode_random"), "weights_raw": ""}
+        return {"name": n_raw, "ft": "cenum", "values_raw": ",".join(enum_vals),
+                "enum_mode": "Random", "weights_raw": "", "_uid": str(uuid.uuid4())}
 
     # Suffix rules when no values provided
     if f.endswith("_auto"):
-        return {"name": n_raw, "type": FT["seq"], "start": 1, "step": 1, "pad_zeros": 3}
+        return {"name": n_raw, "ft": "seq", "start": 1, "step": 1, "pad_zeros": 3, "_uid": str(uuid.uuid4())}
     if f.endswith("_txt"):
-        return {"name": n_raw, "type": FT["uuid"]}
+        return {"name": n_raw, "ft": "uuid", "_uid": str(uuid.uuid4())}
     if f.endswith("_email"):
-        return {"name": n_raw, "type": FT["email"]}
+        return {"name": n_raw, "ft": "email", "_uid": str(uuid.uuid4())}
     if f == "yn" or f.endswith("_yn"):
-        return {"name": n_raw, "type": FT["cenum"], "values_raw": "1,2", "enum_mode": t(lang, "mode_random"), "weights_raw": ""}
+        return {"name": n_raw, "ft": "cenum", "values_raw": "1,2", "enum_mode": "Random", "weights_raw": "", "_uid": str(uuid.uuid4())}
     if f.endswith("_date"):
-        return {"name": n_raw, "type": FT["date"]}
+        return {"name": n_raw, "ft": "date", "_uid": str(uuid.uuid4())}
     if f.endswith("_enum") or f.endswith("_alt") or f == "unit":
         enum_vals = ["cm","m","km","in","ft"] if f == "unit" else ["A","B","C"]
-        return {"name": n_raw, "type": FT["cenum"], "values_raw": ",".join(enum_vals), "enum_mode": t(lang, "mode_random"), "weights_raw": ""}
+        return {"name": n_raw, "ft": "cenum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": "", "_uid": str(uuid.uuid4())}
     if f.endswith("_cmt"):
-        return {"name": n_raw, "type": FT["comment"], "sentiment": t(lang, "sent_random")}
+        return {"name": n_raw, "ft": "comment", "sentiment": "Random", "_uid": str(uuid.uuid4())}
     if f.endswith("_scale11"):
-        return {"name": n_raw, "type": FT["range"], "min": 0, "max": 10, "float": False, "precision": 0}
-    return {"name": n_raw, "type": FT["ctext"]}
+        return {"name": n_raw, "ft": "range", "min": 0, "max": 10, "float": False, "precision": 0, "_uid": str(uuid.uuid4())}
+    return {"name": n_raw, "ft": "ctext", "_uid": str(uuid.uuid4())}
 
-def build_schema_from_dataframe(upload_df: pd.DataFrame, lang: str) -> List[Dict[str, Any]]:
+def build_schema_from_dataframe(upload_df: pd.DataFrame) -> List[Dict[str, Any]]:
     cols = {c.strip().lower(): c for c in upload_df.columns}
     for r in ["name", "field", "values"]:
         if r not in cols:
@@ -595,7 +563,7 @@ def build_schema_from_dataframe(upload_df: pd.DataFrame, lang: str) -> List[Dict
         name = row.get(name_c, "")
         field_code = row.get(field_c, "")
         values = row.get(values_c, "")
-        schema.append(map_row_to_field(name, field_code, values, lang))
+        schema.append(map_row_to_field(name, field_code, values))
     return schema
 
 def read_uploaded_schema(file) -> pd.DataFrame:
@@ -609,25 +577,22 @@ def read_uploaded_schema(file) -> pd.DataFrame:
 # =========================
 # Data generation engine
 # =========================
-def _random_time():
-    return time(random.randrange(0,24), random.randrange(0,60))
-
-def generate_dummy_data(rows, schema, lang, global_timeline=None):
-    # PASS 1
+def generate_dummy_data(rows, schema, global_timeline=None):
     base_rows = []
     for i in range(rows):
         row = {}
         for field in schema:
-            ftype = field["type"]
-            # Grouped Enum: write multiple columns
-            if ftype == FT["genum"]:
+            ft = field["ft"]
+
+            # Grouped Enum writes multiple columns
+            if ft == "genum":
                 group_fields = field.get("group_fields", [])
                 grouped = field.get("group_values", [])
                 if not group_fields or not grouped:
                     continue
-                mode = field.get("enum_mode", t(lang, "mode_random"))
+                mode = field.get("enum_mode", "Random")
                 weights = _parse_weights(field.get("weights_raw", ""), len(grouped))
-                if mode == t(lang, "mode_cycle"):
+                if mode == "Cycle":
                     idx = i % len(grouped)
                 else:
                     idx = random.choices(range(len(grouped)), weights=weights, k=1)[0] if weights else random.randrange(len(grouped))
@@ -636,25 +601,25 @@ def generate_dummy_data(rows, schema, lang, global_timeline=None):
                     row[gf] = val
                 continue
 
-            fname = field.get("name", t(lang, "field_label"))
-            if ftype == FT["seq"]:
+            fname = field.get("name", "Field")
+            if ft == "seq":
                 continue
-            if ftype == FT["date_seq"]:
+            if ft == "date_seq":
                 continue
-            if ftype == FT["const"]:
+            if ft == "const":
                 row[fname] = field.get("value", "")
                 continue
-            if ftype == FT["cenum"]:
+            if ft == "cenum":
                 vals = _parse_enum_values(field.get("values_raw", ""))
                 if not vals:
                     row[fname] = None
                     continue
-                mode = field.get("enum_mode", t(lang, "mode_random"))
+                mode = field.get("enum_mode", "Random")
                 weights = _parse_weights(field.get("weights_raw", ""), len(vals))
-                row[fname] = (vals[i % len(vals)] if mode == t(lang, "mode_cycle")
+                row[fname] = (vals[i % len(vals)] if mode == "Cycle"
                               else (random.choices(vals, weights=weights, k=1)[0] if weights else random.choice(vals)))
                 continue
-            if ftype == FT["range"]:
+            if ft == "range":
                 min_v = int(field.get("min", 0))
                 max_v = int(field.get("max", 10))
                 if min_v > max_v:
@@ -664,19 +629,20 @@ def generate_dummy_data(rows, schema, lang, global_timeline=None):
                 else:
                     row[fname] = random.randint(min_v, max_v)
                 continue
-            if ftype == FT["date"]:
-                gen = FIELD_TYPES.get(ftype)
+            if ft == "date":
+                gen = FIELD_GEN.get(ft)
                 row[fname] = gen() if callable(gen) else None
                 continue
-            if ftype in (FT["comment"], FT["cond_range"]):
+            if ft in ("comment", "cond_range"):
                 continue
-            gen = FIELD_TYPES.get(ftype)
+
+            gen = FIELD_GEN.get(ft)
             row[fname] = gen() if callable(gen) else None
         base_rows.append(row)
 
-    # sequential dates with time
+    # Sequential dates with random time
     for field in schema:
-        if field["type"] == FT["date_seq"]:
+        if field["ft"] == "date_seq":
             fname = field["name"]
             start_date = pd.to_datetime(field.get("seq_start_date"))
             end_date = pd.to_datetime(field.get("seq_end_date"))
@@ -686,8 +652,9 @@ def generate_dummy_data(rows, schema, lang, global_timeline=None):
                 d = pd.to_datetime(date_list[i]).date()
                 row[fname] = datetime.combine(d, _random_time())
 
-    # PASS 2: comments
+    # Comments (trend-aware)
     sentiments_per_row = [dict() for _ in range(rows)]
+
     def _compute_date_range(field_name):
         dates = []
         for r in base_rows:
@@ -705,32 +672,32 @@ def generate_dummy_data(rows, schema, lang, global_timeline=None):
 
     for i, row in enumerate(base_rows):
         for field in schema:
-            if field["type"] != FT["comment"]:
+            if field["ft"] != "comment":
                 continue
             fname = field["name"]
             trend_enabled = field.get("trend_enabled", False)
-            trend_type = field.get("trend_type", t(lang, "trend_inc"))
+            trend_type = field.get("trend_type", "Increasing Positive")
             trend_strength = float(field.get("trend_strength", 0.5))
-            timeline_source = field.get("timeline_source", t(lang, "tl_global"))
+            timeline_source = field.get("timeline_source", "Global timeline")
             date_field_ref = field.get("timeline_date_field", "")
-            base_preset = field.get("base_preset", t(lang, "base_bal"))
+            base_preset = field.get("base_preset", "Balanced")
 
-            if base_preset == t(lang, "base_bal"):
+            if base_preset == "Balanced":
                 base_prob = (0.34, 0.33, 0.33)
-            elif base_preset == t(lang, "base_pos"):
+            elif base_preset == "Positive-heavy":
                 base_prob = (0.6, 0.2, 0.2)
-            elif base_preset == t(lang, "base_neg"):
+            elif base_preset == "Negative-heavy":
                 base_prob = (0.2, 0.2, 0.6)
-            elif base_preset == t(lang, "base_neu"):
+            elif base_preset == "Neutral-heavy":
                 base_prob = (0.2, 0.6, 0.2)
             else:
                 base_prob = (0.34, 0.33, 0.33)
 
             time_factor = 0.0
             if trend_enabled:
-                if timeline_source == t(lang, "tl_global"):
+                if timeline_source == "Global timeline":
                     time_factor = (i / (rows - 1)) if rows > 1 else 0.0
-                elif timeline_source == t(lang, "tl_datefield") and date_field_ref:
+                elif timeline_source == "Date field" and date_field_ref:
                     min_d, max_d = _compute_date_range(date_field_ref)
                     try:
                         this_dt = row.get(date_field_ref)
@@ -748,16 +715,16 @@ def generate_dummy_data(rows, schema, lang, global_timeline=None):
                     time_factor = (i / (rows - 1)) if rows > 1 else 0.0
 
             if trend_enabled:
-                p_pos, p_neu, p_neg = _apply_trend(base_prob, time_factor, trend_type, trend_strength, lang)
+                p_pos, p_neu, p_neg = _apply_trend(base_prob, time_factor, trend_type, trend_strength)
             else:
-                sentiment_choice = field.get("sentiment", t(lang, "sent_random"))
-                if sentiment_choice == t(lang, "sent_random"):
+                sentiment_choice = field.get("sentiment", "Random")
+                if sentiment_choice == "Random":
                     p_pos, p_neu, p_neg = base_prob
-                elif sentiment_choice == t(lang, "sent_positive"):
+                elif sentiment_choice == "Positive":
                     p_pos, p_neu, p_neg = (1.0, 0.0, 0.0)
-                elif sentiment_choice == t(lang, "sent_neutral"):
+                elif sentiment_choice == "Neutral":
                     p_pos, p_neu, p_neg = (0.0, 1.0, 0.0)
-                elif sentiment_choice == t(lang, "sent_negative"):
+                elif sentiment_choice == "Negative":
                     p_pos, p_neu, p_neg = (0.0, 0.0, 1.0)
                 else:
                     p_pos, p_neu, p_neg = base_prob
@@ -776,12 +743,12 @@ def generate_dummy_data(rows, schema, lang, global_timeline=None):
             row[fname] = comment_text
             sentiments_per_row[i][fname] = sentiment
 
-    # PASS 3
+    # Conditional ranges and sequential IDs
     final_rows = []
     for i, row in enumerate(base_rows):
         for field in schema:
-            ftype = field["type"]
-            if ftype == FT["seq"]:
+            ft = field["ft"]
+            if ft == "seq":
                 fname = field["name"]
                 start = int(field.get("start", 1))
                 step = int(field.get("step", 1))
@@ -790,7 +757,7 @@ def generate_dummy_data(rows, schema, lang, global_timeline=None):
                 val = start + i * step
                 row[fname] = str(val).zfill(width)
 
-            elif ftype == FT["cond_range"]:
+            elif ft == "cond_range":
                 fname = field["name"]
                 depends_on = field.get("depends_on", "")
                 pmin, pmax = int(field.get("positive_min", 0)), int(field.get("positive_max", 10))
@@ -850,86 +817,72 @@ if use_global_timeline:
 st.sidebar.subheader(t(lang, "upload_schema"))
 uploaded_file = st.sidebar.file_uploader(t(lang, "upload_label"), type=["csv", "xlsx", "xls"])
 
-type_options = list(FIELD_TYPES.keys())
-
-# Emojis map using localized labels
-EMOJI_LABEL = {
-    FT["seq"]: EMOJI["seq"],
-    FT["uuid"]: EMOJI["uuid"],
-    FT["full"]: EMOJI["full"],
-    FT["first"]: EMOJI["first"],
-    FT["last"]: EMOJI["last"],
-    FT["email"]: EMOJI["email"],
-    FT["phone"]: EMOJI["phone"],
-    FT["address"]: EMOJI["address"],
-    FT["company"]: EMOJI["company"],
-    FT["age"]: EMOJI["age"],
-    FT["job"]: EMOJI["job"],
-    FT["country"]: EMOJI["country"],
-    FT["date"]: EMOJI["date"],
-    FT["date_seq"]: EMOJI["date_seq"],
-    FT["ctext"]: EMOJI["ctext"],
-    FT["cnum"]: EMOJI["cnum"],
-    FT["range"]: EMOJI["range"],
-    FT["comment"]: EMOJI["comment"],
-    FT["cond_range"]: EMOJI["cond_range"],
-    FT["const"]: EMOJI["const"],
-    FT["cenum"]: EMOJI["cenum"],
-    FT["genum"]: EMOJI["genum"],
-}
-
-DEFAULT_FIELD_ORDER = [
-    ("First name" if lang=="en" else "Nombre", FT["first"]),
-    ("Last name" if lang=="en" else "Apellido", FT["last"]),
-    ("Comment" if lang=="en" else "Comentario", FT["comment"]),
-    ("LTR", FT["cond_range"]),
-]
-
 # =========================
 # Sidebar: CSV editor + search
 # =========================
-def _ensure_session_schema(items: List[Dict[str, Any]]):
-    out = []
-    for it in items:
-        it = dict(it)
-        if "_uid" not in it:
-            it["_uid"] = str(uuid.uuid4())
-        out.append(it)
-    return out
+if "schema_items" not in st.session_state:
+    st.session_state.schema_items = []
+if "schema_loaded_name" not in st.session_state:
+    st.session_state.schema_loaded_name = None
+
+schema_from_upload_mode = False
+if uploaded_file:
+    try:
+        upload_df = read_uploaded_schema(uploaded_file)
+        parsed_schema = build_schema_from_dataframe(upload_df)
+        if st.session_state.schema_loaded_name != uploaded_file.name:
+            st.session_state.schema_items = parsed_schema  # each has _uid and ft
+            st.session_state.schema_loaded_name = uploaded_file.name
+        schema_from_upload_mode = True
+    except Exception as e:
+        st.error(f"{t(lang,'failed_parse')}: {e}")
+        st.stop()
+
+def _item_search_text(it: Dict[str, Any]) -> str:
+    ft = _safe_lower(it.get("ft", ""))
+    if it.get("ft") == "genum":
+        names_part = " ".join([s.lower() for s in it.get("group_fields", [])])
+        values_part = "; ".join(["|".join(g) for g in it.get("group_values", [])]).lower()
+        return f"{ft} {names_part} {values_part}"
+    else:
+        name_part = _safe_lower(it.get("name", ""))
+        values_part = _safe_lower(it.get("values_raw", ""))
+        return f"{ft} {name_part} {values_part}"
 
 def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List[str], ui):
     uid = item["_uid"]
-    label = item.get('name', '') if item.get('type') != FT["genum"] else " | ".join(item.get('group_fields', []))
-    with ui.expander(f"{EMOJI_LABEL.get(item.get('type'), '')} {t(lang,'field_label')} {idx+1}: {label}", expanded=(idx < 6)):
+    label_name = item.get('name', '') if item.get('ft') != "genum" else " | ".join(item.get('group_fields', []))
+    with ui.expander(f"{EMOJI.get(item.get('ft'),'')} {t(lang,'field_label')} {idx+1}: {label_name}", expanded=(idx < 6)):
         top = ui.columns([3, 3, 1])
         with top[0]:
-            if item.get("type") == FT["genum"]:
+            if item.get("ft") == "genum":
                 ui.text_input(t(lang,"name_single_disabled"), disabled=True, value="—", key=f"name_disabled_{uid}")
             else:
                 item["name"] = ui.text_input(t(lang,"name"), value=item.get("name", f"{t(lang,'field_label')} {idx+1}"), key=f"name_{uid}")
         with top[1]:
-            current_type = item.get("type", FT["ctext"])
-            if current_type not in type_options:
-                current_type = FT["ctext"]
-            try:
-                type_index = type_options.index(current_type)
-            except ValueError:
-                type_index = 0
-            item["type"] = ui.selectbox(t(lang,"type"), options=type_options, index=type_index, key=f"type_{uid}")
+            # Select by CODE (stable), show localized label
+            current_code = item.get("ft", "ctext")
+            item["ft"] = ui.selectbox(
+                t(lang, "type"),
+                options=FT_CODES,
+                index=FT_CODES.index(current_code) if current_code in FT_CODES else FT_CODES.index("ctext"),
+                format_func=lambda c: ft_label(lang, c),
+                key=f"type_{uid}"
+            )
         with top[2]:
             if ui.button("🗑️", key=f"del_{uid}", help=t(lang,"delete"), use_container_width=True):
                 return "DELETE"
 
-        ftype = item["type"]
+        ft = item["ft"]
 
-        if ftype == FT["seq"]:
+        if ft == "seq":
             cols = ui.columns(3)
             item["start"] = int(cols[0].number_input("Start", value=int(item.get("start", 1)), step=1, key=f"seq_start_{uid}"))
             item["step"] = int(cols[1].number_input("Step", value=int(item.get("step", 1)), step=1, key=f"seq_step_{uid}"))
             item["pad_zeros"] = int(cols[2].number_input("Zeros (additional)", min_value=0, value=int(item.get("pad_zeros", 3)), step=1, key=f"seq_pad_{uid}"))
             ui.caption(t(lang,"seq_id_caption"))
 
-        if ftype == FT["date_seq"]:
+        if ft == "date_seq":
             default_start = item.get("seq_start_date") or (datetime.now().date() - timedelta(days=365))
             default_end   = item.get("seq_end_date")   or datetime.now().date()
             item["seq_start_date"] = ui.date_input("Start date", value=default_start, key=f"seq_date_start_{uid}")
@@ -937,16 +890,16 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
             item["entries_per_date"] = int(ui.number_input("Max entries per date", min_value=1, value=int(item.get("entries_per_date", 1)), step=1, key=f"entries_per_date_{uid}"))
             ui.caption(t(lang,"seq_dates_caption"))
 
-        if ftype == FT["const"]:
+        if ft == "const":
             item["value"] = ui.text_input(t(lang,"const_value"), value=item.get("value", ""), key=f"const_val_{uid}")
 
-        if ftype == FT["cenum"]:
+        if ft == "cenum":
             item["values_raw"] = ui.text_area(t(lang,"enum_values"), value=item.get("values_raw", "A,B,C"), key=f"enum_vals_{uid}")
-            item["enum_mode"] = ui.selectbox(t(lang,"enum_mode"), options=[t(lang,"mode_random"), t(lang,"mode_cycle")], index=0 if item.get("enum_mode",t(lang,"mode_random"))==t(lang,"mode_random") else 1, key=f"enum_mode_{uid}")
+            item["enum_mode"] = ui.selectbox(t(lang,"enum_mode"), options=["Random", "Cycle"], index=0 if item.get("enum_mode","Random")=="Random" else 1, key=f"enum_mode_{uid}")
             item["weights_raw"] = ui.text_input(t(lang,"enum_weights"), value=item.get("weights_raw", ""), key=f"enum_weights_{uid}")
             ui.caption(t(lang,"enum_note"))
 
-        if ftype == FT["genum"]:
+        if ft == "genum":
             ui.markdown(t(lang,"grouped_title"))
             gf = ui.text_input(t(lang,"grouped_fields"), value="|".join(item.get("group_fields", ["name","id"])), key=f"group_fields_{uid}", help=t(lang,"grouped_fields_help"))
             item["group_fields"] = [s.strip() for s in gf.split("|") if s.strip() != ""]
@@ -954,34 +907,44 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
                                value="; ".join(["|".join(g) for g in item.get("group_values", [["Acme","A001"],["Beta","B002"]])]),
                                key=f"group_values_{uid}", help=t(lang,"grouped_values_help"))
             item["group_values"] = _parse_grouped_values(gv)
-            item["enum_mode"] = ui.selectbox(t(lang,"enum_mode"), options=[t(lang,"mode_random"), t(lang,"mode_cycle")], index=0 if item.get("enum_mode",t(lang,"mode_random"))==t(lang,"mode_random") else 1, key=f"group_mode_{uid}")
+            item["enum_mode"] = ui.selectbox(t(lang,"enum_mode"), options=["Random","Cycle"], index=0 if item.get("enum_mode","Random")=="Random" else 1, key=f"group_mode_{uid}")
             item["weights_raw"] = ui.text_input(t(lang,"grouped_weights"), value=item.get("weights_raw",""), key=f"group_weights_{uid}")
             if item["group_values"] and item["group_fields"] and not all(len(g)==len(item["group_fields"]) for g in item["group_values"]):
                 ui.warning(t(lang,"grouped_warn"))
 
-        if ftype == FT["range"]:
+        if ft == "range":
             cols = ui.columns(4)
             item["min"] = int(cols[0].number_input(t(lang,"min"), value=int(item.get("min", 0)), key=f"min_{uid}"))
             item["max"] = int(cols[1].number_input(t(lang,"max"), value=int(item.get("max", 10)), key=f"max_{uid}"))
             item["float"] = bool(cols[2].checkbox(t(lang,"float"), value=bool(item.get("float", False)), key=f"float_{uid}"))
             item["precision"] = int(cols[3].number_input(t(lang,"precision"), min_value=0, max_value=6, value=int(item.get("precision", 2)), key=f"prec_{uid}"))
 
-        if ftype == FT["date"]:
+        if ft == "date":
             ui.caption(t(lang,"date_note"))
 
-        if ftype == FT["comment"]:
-            item["sentiment"] = ui.selectbox(t(lang,"sentiment"), options=[t(lang,"sent_random"), t(lang,"sent_positive"), t(lang,"sent_neutral"), t(lang,"sent_negative")], index=[t(lang,"sent_random"), t(lang,"sent_positive"), t(lang,"sent_neutral"), t(lang,"sent_negative")].index(item.get("sentiment", t(lang,"sent_random"))), key=f"sent_{uid}")
+        if ft == "comment":
+            item["sentiment"] = ui.selectbox(t(lang,"sentiment"),
+                                             options=["Random", "Positive", "Neutral", "Negative"],
+                                             index=["Random","Positive","Neutral","Negative"].index(item.get("sentiment","Random")),
+                                             key=f"sent_{uid}")
             ui.markdown(t(lang,"trend_title"))
             item["trend_enabled"] = bool(ui.checkbox(t(lang,"trend_enable"), value=bool(item.get("trend_enabled", False)), key=f"trend_enabled_{uid}"))
             if item["trend_enabled"]:
-                item["timeline_source"] = ui.selectbox(t(lang,"timeline_source"), options=[t(lang,"tl_global"), t(lang,"tl_datefield")], index=0 if item.get("timeline_source", t(lang,"tl_global"))==t(lang,"tl_global") else 1, key=f"tl_src_{uid}")
-                if item["timeline_source"] == t(lang,"tl_datefield"):
+                item["timeline_source"] = ui.selectbox(t(lang,"timeline_source"), options=["Global timeline", "Date field"],
+                                                       index=0 if item.get("timeline_source","Global timeline")=="Global timeline" else 1,
+                                                       key=f"tl_src_{uid}")
+                if item["timeline_source"] == "Date field":
                     item["timeline_date_field"] = ui.text_input(t(lang,"date_field_name"), value=item.get("timeline_date_field",""), key=f"df_ref_{uid}")
-                item["trend_type"] = ui.selectbox("Trend type", options=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")], index=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")].index(item.get("trend_type", t(lang,"trend_inc"))), key=f"trend_type_{uid}")
+                item["trend_type"] = ui.selectbox("Trend type", options=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")],
+                                                  index=[t(lang,"trend_inc"), t(lang,"trend_dec"), t(lang,"trend_cyc"), t(lang,"trend_jit")].index(item.get("trend_type", t(lang,"trend_inc"))),
+                                                  key=f"trend_type_{uid}")
                 item["trend_strength"] = float(ui.slider(t(lang,"trend_strength"), 0.0, 1.0, float(item.get("trend_strength", 0.5)), step=0.01, key=f"trend_strength_{uid}"))
-                item["base_preset"] = ui.selectbox(t(lang,"base_dist"), options=[t(lang,"base_bal"), t(lang,"base_pos"), t(lang,"base_neu"), t(lang,"base_neg")], index=[t(lang,"base_bal"), t(lang,"base_pos"), t(lang,"base_neu"), t(lang,"base_neg")].index(item.get("base_preset", t(lang,"base_bal"))), key=f"base_preset_{uid}")
+                item["base_preset"] = ui.selectbox(t(lang,"base_dist"),
+                                                   options=[ "Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"],
+                                                   index=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"].index(item.get("base_preset","Balanced")),
+                                                   key=f"base_preset_{uid}")
 
-        if ftype == FT["cond_range"]:
+        if ft == "cond_range":
             ui.markdown(t(lang,"depends_on"))
             if all_comment_names:
                 default_name = item.get("depends_on", all_comment_names[0])
@@ -1011,68 +974,28 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
             item["float"] = bool(cols4[2].checkbox(t(lang,"float"), value=bool(item.get("float", False)), key=f"cr_float_{uid}"))
             if item["float"]:
                 item["precision"] = int(ui.number_input(t(lang,"precision"), min_value=0, max_value=6, value=int(item.get("precision", 2)), key=f"cr_prec_{uid}"))
-        return "OK"
+    return "OK"
 
-# state
-if "schema_items" not in st.session_state:
-    st.session_state.schema_items = []
-if "schema_loaded_name" not in st.session_state:
-    st.session_state.schema_loaded_name = None
-
-schema_from_upload_mode = False
-if uploaded_file:
-    try:
-        upload_df = read_uploaded_schema(uploaded_file)
-        parsed_schema = build_schema_from_dataframe(upload_df, lang)
-        if st.session_state.schema_loaded_name != uploaded_file.name:
-            st.session_state.schema_items = _ensure_session_schema(parsed_schema)
-            st.session_state.schema_loaded_name = uploaded_file.name
-        schema_from_upload_mode = True
-    except Exception as e:
-        st.error(f"{t(lang,'failed_parse')}: {e}")
-        st.stop()
-
-# Sidebar: editable CSV schema and search
+# Build editor if CSV uploaded; else manual builder
 if schema_from_upload_mode:
     st.sidebar.subheader(t(lang, "csv_fields"))
 
-    # search with persistent key + clear button
-    search_query = st.sidebar.text_input(
-        t(lang, "search"),
-        value=st.session_state.get("schema_search", ""),
-        key="schema_search",
-        placeholder=t(lang, "search_ph")
-    ).strip().lower()
+    # Search box (no 'value='). Clear via callback.
+    search_query_raw = st.sidebar.text_input(t(lang, "search"), key="schema_search", placeholder=t(lang, "search_ph"))
+    search_query = (search_query_raw or "").strip().lower()
+    c1, c2 = st.sidebar.columns([3, 1])
+    with c2:
+        st.sidebar.button(t(lang, "clear"), key="clear_search_btn", on_click=_clear_schema_search)
 
-    # collect all comment names (from full list, not filtered)
-    all_comment_names = []
-    for it in st.session_state.schema_items:
-        if it.get("type") == FT["comment"]:
-            nm = it.get("name", "").strip()
-            if nm:
-                all_comment_names.append(nm)
-
-    def _item_text_for_search(it: Dict[str, Any]) -> str:
-        ftype = _safe_lower(it.get("type", ""))
-        if it.get("type") == FT["genum"]:
-            names_part = " ".join([s.lower() for s in it.get("group_fields", [])])
-            values_part = "; ".join(["|".join(g) for g in it.get("group_values", [])]).lower()
-            return f"{ftype} {names_part} {values_part}"
-        else:
-            name_part = _safe_lower(it.get("name", ""))
-            values_part = _safe_lower(it.get("values_raw", ""))
-            return f"{ftype} {name_part} {values_part}"
-
+    # full list then filter
     items = st.session_state.schema_items
-    display_items = [it for it in items if (search_query in _item_text_for_search(it))] if search_query else items
+    display_items = [it for it in items if (search_query in _item_search_text(it))] if search_query else items
 
-    c1, c2 = st.sidebar.columns([3,1])
+    # collect all comment names from FULL list (not filtered)
+    all_comment_names = [it.get("name","").strip() for it in items if it.get("ft") == "comment" and it.get("name","").strip()]
+
     with c1:
         st.sidebar.caption(f"{t(lang,'showing')} {len(display_items)} {t(lang,'of')} {len(items)} {t(lang,'fields')}")
-    with c2:
-        if st.sidebar.button(t(lang, "clear"), key="clear_search_btn"):
-            st.session_state["schema_search"] = ""
-            st.rerun()
 
     if len(display_items) == 0:
         st.sidebar.info(t(lang, "no_matches"))
@@ -1083,7 +1006,7 @@ if schema_from_upload_mode:
             if result == "DELETE":
                 to_delete.append(item["_uid"])
         if to_delete:
-            st.session_state.schema_items = [it for it in st.session_state.schema_items if it["_uid"] not in to_delete]
+            st.session_state.schema_items = [it for it in items if it["_uid"] not in to_delete]
             st.rerun()
 
     sbc1, sbc2 = st.sidebar.columns(2)
@@ -1091,13 +1014,14 @@ if schema_from_upload_mode:
         st.session_state.schema_items.append({
             "_uid": str(uuid.uuid4()),
             "name": f"{t(lang,'field_label')} {len(st.session_state.schema_items)+1}",
-            "type": FT["ctext"]
+            "ft": "ctext"
         })
         st.rerun()
     if sbc2.button(t(lang, "clear_schema"), key="clear_uploaded_schema"):
         st.session_state.schema_items = []
         st.rerun()
 
+    # Schema to use (strip only _uid)
     schema: List[Dict[str, Any]] = [{k: v for k, v in it.items() if k != "_uid"} for it in st.session_state.schema_items]
 
 else:
@@ -1105,33 +1029,35 @@ else:
     st.sidebar.subheader("🛠️ Add Custom Fields" if lang=="en" else "🛠️ Agregar Campos")
     num_fields = st.sidebar.number_input("Number of fields" if lang=="en" else "Número de campos", 1, 40, 4)
     schema: List[Dict[str, Any]] = []
+    DEFAULT_FIELD_ORDER = [
+        ("First name" if lang=="en" else "Nombre", "first"),
+        ("Last name" if lang=="en" else "Apellido", "last"),
+        ("Comment" if lang=="en" else "Comentario", "comment"),
+        ("LTR", "cond_range"),
+    ]
     for i in range(num_fields):
         with st.sidebar.expander(f"{t(lang,'field_label')} {i+1}", expanded=(i < 6)):
             col1, col2 = st.columns([2, 2])
             if i < len(DEFAULT_FIELD_ORDER):
-                default_name, default_type = DEFAULT_FIELD_ORDER[i]
+                default_name, default_code = DEFAULT_FIELD_ORDER[i]
             else:
-                default_name, default_type = f"{t(lang,'field_label')} {i+1}", None
+                default_name, default_code = f"{t(lang,'field_label')} {i+1}", "ctext"
 
             with col1:
                 field_name = st.text_input(t(lang,"name"), value=default_name, key=f"name_{i}")
 
-            type_options_manual = type_options
-            if default_type and default_type in type_options_manual:
-                default_type_index = type_options_manual.index(default_type)
-            else:
-                default_type_index = min(i, len(type_options_manual) - 1)
-
             with col2:
-                field_type = st.selectbox(t(lang,"type"), options=type_options_manual, index=default_type_index, key=f"type_{i}")
+                ft_code = st.selectbox(t(lang,"type"), options=FT_CODES,
+                                       index=FT_CODES.index(default_code) if default_code in FT_CODES else FT_CODES.index("ctext"),
+                                       format_func=lambda c: ft_label(lang, c), key=f"type_{i}")
 
-            st.markdown(f"**{EMOJI_LABEL.get(field_type,'')} {field_name or default_name} — _{field_type}_**")
-            field_def = {"type": field_type}
+            st.markdown(f"**{EMOJI.get(ft_code,'')} {field_name or default_name} — _{ft_label(lang, ft_code)}_**")
+            field_def = {"ft": ft_code}
 
-            if field_type == FT["genum"]:
+            if ft_code == "genum":
                 gf = st.text_input(t(lang,"grouped_fields"), value=f"{(field_name or default_name)}_name|{(field_name or default_name)}_id", key=f"m_group_fields_{i}")
                 gv = st.text_area(t(lang,"grouped_values"), value="Acme|A001; Beta|B002", key=f"m_group_values_{i}")
-                mode = st.selectbox(t(lang,"enum_mode"), options=[t(lang,"mode_random"), t(lang,"mode_cycle")], index=0, key=f"m_group_mode_{i}")
+                mode = st.selectbox(t(lang,"enum_mode"), options=["Random", "Cycle"], index=0, key=f"m_group_mode_{i}")
                 weights = st.text_input(t(lang,"grouped_weights"), value="", key=f"m_group_weights_{i}")
                 field_def.update({
                     "group_fields": [s.strip() for s in gf.split("|") if s.strip()!=""],
@@ -1142,14 +1068,14 @@ else:
             else:
                 field_def["name"] = field_name or default_name
 
-            if field_type == FT["seq"]:
+            if ft_code == "seq":
                 start = st.number_input("Start", value=1, step=1, key=f"seq_start_{i}")
                 step = st.number_input("Step", value=1, step=1, key=f"seq_step_{i}")
                 pad_zeros = st.number_input("Zeros (additional)", min_value=0, value=3, step=1, key=f"seq_pad_{i}")
                 st.caption(t(lang,"seq_id_caption"))
                 field_def.update({"start": int(start), "step": int(step), "pad_zeros": int(pad_zeros)})
 
-            if field_type == FT["date_seq"]:
+            if ft_code == "date_seq":
                 seq_start_date = st.date_input("Start date", value=datetime.now().date() - timedelta(days=365), key=f"seq_date_start_{i}")
                 seq_end_date = st.date_input("End date", value=datetime.now().date(), key=f"seq_date_end_{i}")
                 entries_per_date = st.number_input("Max entries per date", min_value=1, value=1, step=1, key=f"entries_per_date_{i}")
@@ -1160,18 +1086,18 @@ else:
                     "entries_per_date": int(entries_per_date)
                 })
 
-            if field_type == FT["const"]:
+            if ft_code == "const":
                 const_val = st.text_input(t(lang,"const_value"), value="", key=f"const_val_{i}")
                 field_def.update({"value": const_val})
 
-            if field_type == FT["cenum"]:
+            if ft_code == "cenum":
                 vals = st.text_area(t(lang,"enum_values"), value="A,B,C", key=f"enum_vals_{i}")
-                mode = st.selectbox(t(lang,"enum_mode"), options=[t(lang,"mode_random"), t(lang,"mode_cycle")], index=0, key=f"enum_mode_{i}")
+                mode = st.selectbox(t(lang,"enum_mode"), options=["Random", "Cycle"], index=0, key=f"enum_mode_{i}")
                 weights = st.text_input(t(lang,"enum_weights"), value="", key=f"enum_weights_{i}")
                 st.caption(t(lang,"enum_note"))
                 field_def.update({"values_raw": vals, "enum_mode": mode, "weights_raw": weights})
 
-            if field_type == FT["range"]:
+            if ft_code == "range":
                 rcol1, rcol2 = st.columns([1, 1])
                 with rcol1:
                     min_val = st.number_input(t(lang,"min"), value=0, key=f"min_{i}")
@@ -1181,21 +1107,21 @@ else:
                 precision = st.number_input(t(lang,"precision"), min_value=0, max_value=6, value=2, key=f"prec_{i}")
                 field_def.update({"min": min_val, "max": max_val, "float": float_toggle, "precision": precision})
 
-            if field_type == FT["date"]:
+            if ft_code == "date":
                 st.caption(t(lang,"date_note"))
 
-            if field_type == FT["comment"]:
-                sentiment = st.selectbox(t(lang,"sentiment"), options=[t(lang,"sent_random"), t(lang,"sent_positive"), t(lang,"sent_neutral"), t(lang,"sent_negative")], index=0, key=f"sentiment_{i}")
+            if ft_code == "comment":
+                sentiment = st.selectbox(t(lang,"sentiment"), options=["Random", "Positive", "Neutral", "Negative"], index=0, key=f"sentiment_{i}")
                 field_def["sentiment"] = sentiment
                 st.markdown(t(lang,"trend_title"))
                 trend_enabled = st.checkbox(t(lang,"trend_enable"), value=False, key=f"trend_enabled_{i}")
                 field_def["trend_enabled"] = trend_enabled
 
                 if trend_enabled:
-                    tl_source = st.selectbox(t(lang,"timeline_source"), options=[t(lang,"tl_global"), t(lang,"tl_datefield")], key=f"tl_src_{i}")
+                    tl_source = st.selectbox(t(lang,"timeline_source"), options=["Global timeline", "Date field"], key=f"tl_src_{i}")
                     field_def["timeline_source"] = tl_source
-                    if tl_source == t(lang,"tl_datefield"):
-                        date_field_options = [f["name"] for f in schema if f.get("type") in [FT["date"], FT["date_seq"]]]
+                    if tl_source == "Date field":
+                        date_field_options = [f["name"] for f in schema if f.get("ft") in ["date", "date_seq"]]
                         if date_field_options:
                             chosen_df = st.selectbox(t(lang,"date_field_name"), options=date_field_options + ["(manual)"], key=f"df_choice_{i}")
                             if chosen_df == "(manual)":
@@ -1211,11 +1137,11 @@ else:
                     field_def["trend_type"] = trend_type
                     field_def["trend_strength"] = float(trend_strength)
 
-                    base_preset = st.selectbox(t(lang,"base_dist"), options=[t(lang,"base_bal"), t(lang,"base_pos"), t(lang,"base_neu"), t(lang,"base_neg")], key=f"base_preset_{i}")
+                    base_preset = st.selectbox(t(lang,"base_dist"), options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], key=f"base_preset_{i}")
                     field_def["base_preset"] = base_preset
 
-            if field_type == FT["cond_range"]:
-                comment_field_options = [f["name"] for f in schema if f.get("type") == FT["comment"]]
+            if ft_code == "cond_range":
+                comment_field_options = [f["name"] for f in schema if f.get("ft") == "comment"]
                 if comment_field_options:
                     depends_on = st.selectbox("Depends on", options=comment_field_options, index=0, key=f"cr_dep_choice_{i}")
                 else:
@@ -1333,10 +1259,10 @@ st.caption(t(lang, "templates_caption"))
 # Generate & show
 # ================
 schema_to_use = schema
-df = generate_dummy_data(rows, schema_to_use, lang, global_timeline=global_timeline)
+df = generate_dummy_data(rows, schema_to_use, global_timeline=global_timeline)
 
-# ✅ Format date columns for display/export as "mm/dd/yyyy, hh:mm AM/PM"
-date_fields = [f.get("name") for f in schema_to_use if f.get("type") in [FT["date"], FT["date_seq"]]]
+# ✅ Format date columns as "mm/dd/yyyy, hh:mm AM/PM" for display/export
+date_fields = [f.get("name") for f in schema_to_use if f.get("ft") in ["date", "date_seq"]]
 df_fmt = df.copy()
 for col in date_fields:
     if col in df_fmt.columns:
