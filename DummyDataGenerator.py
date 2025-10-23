@@ -756,7 +756,7 @@ if schema_from_upload_mode:
                 names_part = " ".join([s.lower() for s in it.get("group_fields", [])])
                 values_part = "; ".join(["|".join(g) for g in it.get("group_values", [])]).lower()
                 return f"{ftype} {names_part} {values_part}"
-        else:
+            else:
                 name_part = _safe_lower(it.get("name", ""))
                 values_part = _safe_lower(it.get("values_raw", ""))
                 return f"{ftype} {name_part} {values_part}"
