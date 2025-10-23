@@ -34,6 +34,7 @@ FIELD_TYPES = {
     "Conditional Range (Based on Comment Sentiment)": None,
     "Constant": None,
     "Custom Enum": None,
+    "Grouped Enum": None,   # NEW
 }
 
 # --- Comment pools ---
@@ -129,6 +130,24 @@ def _parse_weights(raw: str, n):
         return None
     return weights
 
+def _parse_grouped_values(raw: str) -> List[List[str]]:
+    """
+    Parse grouped values string into list of groups.
+    Syntax: groups separated by ';', fields in each group separated by '|'.
+    Example: "Acme|A001; Beta|B002" -> [["Acme","A001"], ["Beta","B002"]]
+    """
+    if raw is None or str(raw).strip() == "":
+        return []
+    groups = []
+    for chunk in str(raw).split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [p.strip() for p in chunk.split("|")]
+        if any(p != "" for p in parts):
+            groups.append(parts)
+    return groups
+
 def _generate_sequential_dates(rows, start_date, end_date, entries_per_date):
     date_list = []
     num_unique_dates = math.ceil(rows / entries_per_date)
@@ -172,62 +191,92 @@ def _safe_str(x: Any) -> str:
 def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
     """
     Map (Name, field, values) to internal schema item.
-    Rules:
+
+    NEW rules:
+    - If 'values' is non-empty -> treat as enum:
+        * If it contains '|' (and Name also has '|' to define multiple columns), make a **Grouped Enum**
+        * Otherwise a **Custom Enum** (single field)
+      This overrides any suffix like _date/_email/etc for that row.
+
+    Legacy suffix rules (used only when values empty):
       *_txt        -> Unique ID (UUID)
       *_auto       -> Unique ID (Sequential)
-      yn/_yn       -> Custom Enum 1,2 (or from values)
+      yn/_yn       -> Custom Enum 1,2
       *_date       -> Date
       *_email      -> Email
-      *_enum/_alt  -> Custom Enum from values
-      UNIT/unit    -> Custom Enum from values (defaults if empty)
+      *_enum/_alt  -> Custom Enum
+      UNIT/unit    -> Custom Enum (defaults if empty)
       *_cmt        -> Comment (Sentiment)
       *_scale11    -> Range (0-10) (ints)
       default      -> Custom Text
     """
-    n = _safe_str(name).strip() or "Field"
+    n_raw = _safe_str(name).strip() or "Field"
     f = _safe_lower(field_code)
     v = _safe_str(values).strip()
 
+    # --- VALUES FORCES ENUM ---
+    if v:
+        # Grouped if either Name or values suggests multiple fields (use '|')
+        if ("|" in n_raw) or ("|" in v):
+            group_fields = [s.strip() for s in n_raw.split("|") if s.strip() != ""]
+            grouped = _parse_grouped_values(v)
+            # Normalize all groups to same length as group_fields if possible
+            if group_fields and all(len(g) == len(group_fields) for g in grouped):
+                mode = "Random"
+                return {
+                    "type": "Grouped Enum",
+                    "group_fields": group_fields,
+                    "group_values": grouped,   # List[List[str]]
+                    "enum_mode": mode,
+                    "weights_raw": "",         # optional weights for groups
+                }
+            else:
+                # Fallback: treat as single-field custom enum if shapes mismatch
+                enum_vals = _parse_enum_values(v)
+                return {"name": n_raw, "type": "Custom Enum",
+                        "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+        else:
+            enum_vals = _parse_enum_values(v)
+            return {"name": n_raw, "type": "Custom Enum",
+                    "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+
+    # --- Legacy mapping when values is empty ---
     # Unique IDs
     if f.endswith("_auto"):
-        return {"name": n, "type": "Unique ID (Sequential)", "start": 1, "step": 1, "pad_zeros": 3}
+        return {"name": n_raw, "type": "Unique ID (Sequential)", "start": 1, "step": 1, "pad_zeros": 3}
     if f.endswith("_txt"):
-        return {"name": n, "type": "Unique ID (UUID)"}
+        return {"name": n_raw, "type": "Unique ID (UUID)"}
 
     # Email
     if f.endswith("_email"):
-        return {"name": n, "type": "Email"}
+        return {"name": n_raw, "type": "Email"}
 
     # yes/no (1/2)
     if f == "yn" or f.endswith("_yn"):
-        enum_vals = _parse_enum_values(v) if v else ["1", "2"]
-        if not enum_vals:
-            enum_vals = ["1", "2"]
-        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+        return {"name": n_raw, "type": "Custom Enum", "values_raw": "1,2", "enum_mode": "Random", "weights_raw": ""}
 
     # dates
     if f.endswith("_date"):
-        return {"name": n, "type": "Date"}
+        return {"name": n_raw, "type": "Date"}
 
     # enum-like (includes UNIT)
     if f.endswith("_enum") or f.endswith("_alt") or f == "unit":
-        enum_vals = _parse_enum_values(v)
-        if f == "unit" and not enum_vals:
+        # no values provided -> default placeholder
+        enum_vals = ["A", "B", "C"]
+        if f == "unit":
             enum_vals = ["cm", "m", "km", "in", "ft"]
-        if not enum_vals:
-            enum_vals = ["A", "B", "C"]
-        return {"name": n, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
+        return {"name": n_raw, "type": "Custom Enum", "values_raw": ",".join(enum_vals), "enum_mode": "Random", "weights_raw": ""}
 
     # comment
     if f.endswith("_cmt"):
-        return {"name": n, "type": "Comment (Sentiment)", "sentiment": "Random"}
+        return {"name": n_raw, "type": "Comment (Sentiment)", "sentiment": "Random"}
 
     # 0-10 scale
     if f.endswith("_scale11"):
-        return {"name": n, "type": "Range (0-10)", "min": 0, "max": 10, "float": False, "precision": 0}
+        return {"name": n_raw, "type": "Range (0-10)", "min": 0, "max": 10, "float": False, "precision": 0}
 
     # fallback
-    return {"name": n, "type": "Custom Text"}
+    return {"name": n_raw, "type": "Custom Text"}
 
 def build_schema_from_dataframe(upload_df: pd.DataFrame) -> List[Dict[str, Any]]:
     cols = {c.strip().lower(): c for c in upload_df.columns}
@@ -264,14 +313,37 @@ def generate_dummy_data(rows, schema, global_timeline=None):
       - Second pass: generate comment fields (trend-aware)
       - Third pass: evaluate conditional ranges & sequential IDs
     """
-    # PASS 1: base rows (includes Constants & Custom Enums)
+    # PASS 1: base rows (includes Constants & Custom Enums & Grouped Enums)
     base_rows = []
     for i in range(rows):
         row = {}
         for field in schema:
-            fname = field["name"]
             ftype = field["type"]
 
+            # GROUPED ENUM: writes multiple columns at once
+            if ftype == "Grouped Enum":
+                group_fields = field.get("group_fields", [])
+                grouped = field.get("group_values", [])
+                if not group_fields or not grouped:
+                    # nothing to write
+                    continue
+                mode = field.get("enum_mode", "Random")
+                weights = _parse_weights(field.get("weights_raw", ""), len(grouped))
+                if mode == "Cycle":
+                    idx = i % len(grouped)
+                else:
+                    if weights:
+                        idx = random.choices(range(len(grouped)), weights=weights, k=1)[0]
+                    else:
+                        idx = random.randrange(len(grouped))
+                chosen = grouped[idx]
+                # Assign aligned values to columns
+                for gf, val in zip(group_fields, chosen):
+                    row[gf] = val
+                continue
+
+            # Single-field types below
+            fname = field.get("name", "Field")
             if ftype == "Unique ID (Sequential)":
                 continue
             if ftype == "Date (Sequential)":
@@ -286,15 +358,11 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                     row[fname] = None
                     continue
                 mode = field.get("enum_mode", "Random")
-                weights_raw = field.get("weights_raw", "")
-                weights = _parse_weights(weights_raw, len(vals))
+                weights = _parse_weights(field.get("weights_raw", ""), len(vals))
                 if mode == "Cycle":
                     row[fname] = vals[i % len(vals)]
                 else:
-                    if weights:
-                        row[fname] = random.choices(vals, weights=weights, k=1)[0]
-                    else:
-                        row[fname] = random.choice(vals)
+                    row[fname] = random.choices(vals, weights=weights, k=1)[0] if weights else random.choice(vals)
                 continue
             if ftype == "Range (0-10)":
                 min_v = int(field.get("min", 0))
@@ -308,19 +376,12 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 continue
             if ftype == "Date":
                 gen = FIELD_TYPES.get(ftype)
-                if callable(gen):
-                    row[fname] = gen()
-                else:
-                    row[fname] = None
+                row[fname] = gen() if callable(gen) else None
                 continue
-            # skip comment and conditional-range types here (we'll handle later)
             if ftype in ("Comment (Sentiment)", "Conditional Range (Based on Comment Sentiment)"):
                 continue
             gen = FIELD_TYPES.get(ftype)
-            if callable(gen):
-                row[fname] = gen()
-            else:
-                row[fname] = None
+            row[fname] = gen() if callable(gen) else None
         base_rows.append(row)
 
     # Generate sequential dates for all Date (Sequential) fields
@@ -354,11 +415,10 @@ def generate_dummy_data(rows, schema, global_timeline=None):
 
     for i, row in enumerate(base_rows):
         for field in schema:
-            fname = field["name"]
             ftype = field["type"]
-
             if ftype != "Comment (Sentiment)":
                 continue
+            fname = field["name"]
 
             # Trend settings
             trend_enabled = field.get("trend_enabled", False)
@@ -381,7 +441,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
 
             time_factor = 0.0
             if trend_enabled:
-                if timeline_source == "Global timeline" and global_timeline is not None:
+                if timeline_source == "Global timeline":
                     time_factor = (i / (rows - 1)) if rows > 1 else 0.0
                 elif timeline_source == "Date field" and date_field_ref:
                     min_d, max_d = _compute_date_range(date_field_ref)
@@ -432,12 +492,10 @@ def generate_dummy_data(rows, schema, global_timeline=None):
     # PASS 3: conditional ranges and sequential ids
     final_rows = []
     for i, row in enumerate(base_rows):
-        # Sequential IDs: any field of that type should be added now
         for field in schema:
-            fname = field["name"]
             ftype = field["type"]
-
             if ftype == "Unique ID (Sequential)":
+                fname = field["name"]
                 start = int(field.get("start", 1))
                 step = int(field.get("step", 1))
                 pad_zeros = int(field.get("pad_zeros", 3))
@@ -446,6 +504,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 row[fname] = str(val).zfill(width)
 
             elif ftype == "Conditional Range (Based on Comment Sentiment)":
+                fname = field["name"]
                 depends_on = field.get("depends_on", "")
                 pmin, pmax = int(field.get("positive_min", 0)), int(field.get("positive_max", 10))
                 nmin, nmax = int(field.get("neutral_min", 0)), int(field.get("neutral_max", 10))
@@ -488,12 +547,7 @@ st.sidebar.header("⚙️ Settings")
 
 # Rows input: slider or number field
 st.sidebar.subheader("Rows")
-rows_input_mode = st.sidebar.radio(
-    "Input mode",
-    ["Slider", "Number"],
-    horizontal=True,
-    key="rows_input_mode"
-)
+rows_input_mode = st.sidebar.radio("Input mode", ["Slider", "Number"], horizontal=True, key="rows_input_mode")
 if rows_input_mode == "Slider":
     rows = st.sidebar.slider("Number of rows", min_value=10, max_value=100000, value=100, step=10, key="rows_slider")
 else:
@@ -540,6 +594,7 @@ EMOJI = {
     "Conditional Range (Based on Comment Sentiment)": "🎯",
     "Constant": "🔒",
     "Custom Enum": "🧩",
+    "Grouped Enum": "🧩👥",
 }
 
 DEFAULT_FIELD_ORDER = [
@@ -564,10 +619,15 @@ def _ensure_session_schema(items: List[Dict[str, Any]]):
 def _render_field_editor(item: Dict[str, Any], idx: int):
     """Render one field editor row with delete button; mutate item in-place via session_state widgets."""
     uid = item["_uid"]
-    with st.expander(f"{EMOJI.get(item.get('type'), '')} Field {idx+1}: {item.get('name','')}", expanded=(idx < 6)):
+    label = item.get('name', '') if item.get('type') != "Grouped Enum" else " | ".join(item.get('group_fields', []))
+    with st.expander(f"{EMOJI.get(item.get('type'), '')} Field {idx+1}: {label}", expanded=(idx < 6)):
         top = st.columns([3, 3, 1])
         with top[0]:
-            item["name"] = st.text_input("Name", value=item.get("name", f"Field{idx+1}"), key=f"name_{uid}")
+            if item.get("type") == "Grouped Enum":
+                # Names shown below in grouped section
+                st.text_input("Name (single field)", disabled=True, value="—", key=f"name_disabled_{uid}")
+            else:
+                item["name"] = st.text_input("Name", value=item.get("name", f"Field{idx+1}"), key=f"name_{uid}")
         with top[1]:
             current_type = item.get("type", "Custom Text")
             if current_type not in type_options:
@@ -607,6 +667,27 @@ def _render_field_editor(item: Dict[str, Any], idx: int):
             item["weights_raw"] = st.text_input("Optional weights (same length)", value=item.get("weights_raw", ""), key=f"enum_weights_{uid}")
             st.caption("Random = weighted/uniform random pick. Cycle = round-robin per row.")
 
+        if ftype == "Grouped Enum":
+            st.markdown("**Grouped Enum configuration**")
+            gf = st.text_input(
+                "Output field names (use `|` to separate)",
+                value="|".join(item.get("group_fields", ["name","id"])),
+                key=f"group_fields_{uid}",
+                help="Example: client_name|client_id"
+            )
+            item["group_fields"] = [s.strip() for s in gf.split("|") if s.strip() != ""]
+            gv = st.text_area(
+                "Group options (one group; fields separated by `|`, groups separated by `;`)",
+                value="; ".join(["|".join(g) for g in item.get("group_values", [["Acme","A001"],["Beta","B002"]])]),
+                key=f"group_values_{uid}",
+                help="Example: Acme|A001; Beta|B002; Gamma|G003"
+            )
+            item["group_values"] = _parse_grouped_values(gv)
+            item["enum_mode"] = st.selectbox("Mode", options=["Random","Cycle"], index=0 if item.get("enum_mode","Random")=="Random" else 1, key=f"group_mode_{uid}")
+            item["weights_raw"] = st.text_input("Optional weights for groups (comma-separated)", value=item.get("weights_raw",""), key=f"group_weights_{uid}")
+            if item["group_values"] and item["group_fields"] and not all(len(g)==len(item["group_fields"]) for g in item["group_values"]):
+                st.warning("Each group's number of values must match the number of output fields.")
+
         if ftype == "Range (0-10)":
             cols = st.columns(4)
             item["min"] = int(cols[0].number_input("Min", value=int(item.get("min", 0)), key=f"min_{uid}"))
@@ -625,7 +706,6 @@ def _render_field_editor(item: Dict[str, Any], idx: int):
                 item["trend_type"] = st.selectbox("Trend type", options=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"], index=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"].index(item.get("trend_type","Increasing Positive")), key=f"trend_type_{uid}")
                 item["trend_strength"] = float(st.slider("Trend strength", 0.0, 1.0, float(item.get("trend_strength", 0.5)), step=0.01, key=f"trend_strength_{uid}"))
                 item["base_preset"] = st.selectbox("Base distribution", options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], index=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"].index(item.get("base_preset","Balanced")), key=f"base_preset_{uid}")
-
         if ftype == "Conditional Range (Based on Comment Sentiment)":
             item["depends_on"] = st.text_input("Depends on (comment field name)", value=item.get("depends_on",""), key=f"cr_dep_{uid}")
             st.markdown("**Ranges by sentiment**")
@@ -711,16 +791,31 @@ else:
             with col1:
                 field_name = st.text_input("Name", value=default_name, key=f"name_{i}")
 
-            if default_type and default_type in type_options:
-                default_type_index = type_options.index(default_type)
+            type_options_manual = type_options  # includes Grouped Enum
+            if default_type and default_type in type_options_manual:
+                default_type_index = type_options_manual.index(default_type)
             else:
-                default_type_index = min(i, len(type_options) - 1)
+                default_type_index = min(i, len(type_options_manual) - 1)
 
             with col2:
-                field_type = st.selectbox("Type", options=type_options, index=default_type_index, key=f"type_{i}")
+                field_type = st.selectbox("Type", options=type_options_manual, index=default_type_index, key=f"type_{i}")
 
             st.markdown(f"**{EMOJI.get(field_type, '')} {field_name or default_name} — _{field_type}_**")
-            field_def = {"name": field_name or default_name, "type": field_type, "default_name": default_name}
+            field_def = {"type": field_type}
+
+            if field_type == "Grouped Enum":
+                gf = st.text_input("Output field names (use `|`)", value=f"{field_name or default_name}_name|{field_name or default_name}_id", key=f"m_group_fields_{i}")
+                gv = st.text_area("Group options (use `;` between groups, `|` within group)", value="Acme|A001; Beta|B002", key=f"m_group_values_{i}")
+                mode = st.selectbox("Mode", options=["Random","Cycle"], index=0, key=f"m_group_mode_{i}")
+                weights = st.text_input("Optional weights (for groups)", value="", key=f"m_group_weights_{i}")
+                field_def.update({
+                    "group_fields": [s.strip() for s in gf.split("|") if s.strip()!=""],
+                    "group_values": _parse_grouped_values(gv),
+                    "enum_mode": mode,
+                    "weights_raw": weights,
+                })
+            else:
+                field_def["name"] = field_name or default_name
 
             if field_type == "Unique ID (Sequential)":
                 start = st.number_input("Start", value=1, step=1, key=f"seq_start_{i}")
@@ -746,10 +841,10 @@ else:
                 field_def.update({"value": const_val})
 
             if field_type == "Custom Enum":
-                vals = st.text_area("Enum values (comma-separated)", value="A,B,C", help="Enter values separated by commas, e.g. red, green, blue", key=f"enum_vals_{i}")
+                vals = st.text_area("Enum values (comma-separated)", value="A,B,C", help="Enter values separated by commas", key=f"enum_vals_{i}")
                 mode = st.selectbox("Mode", options=["Random", "Cycle"], index=0, key=f"enum_mode_{i}")
-                weights = st.text_input("Optional weights (comma-separated, same length as values) — leave empty for uniform", value="", key=f"enum_weights_{i}")
-                st.caption("Random: picks one value per row at random (weights respected). Cycle: round-robin across rows.")
+                weights = st.text_input("Optional weights (same length)", value="", key=f"enum_weights_{i}")
+                st.caption("Random: weighted/uniform; Cycle: round-robin.")
                 field_def.update({"values_raw": vals, "enum_mode": mode, "weights_raw": weights})
 
             if field_type == "Range (0-10)":
@@ -857,15 +952,16 @@ st.subheader("📥 Download schema template")
 
 blank_template = pd.DataFrame(columns=["Name", "field", "values"])
 example_template = pd.DataFrame([
-    {"Name": "id",            "field": "user_auto",       "values": ""},                       # *_auto -> sequential ID
-    {"Name": "uuid",          "field": "user_txt",        "values": ""},                       # *_txt  -> UUID
-    {"Name": "contact_email", "field": "contact_email",   "values": ""},                       # *_email -> Email
-    {"Name": "answer",        "field": "question_yn",     "values": "1,2"},                    # yn/_yn -> enum (or override here)
-    {"Name": "visit_date",    "field": "visit_date",      "values": ""},                       # *_date -> random date
-    {"Name": "rating",        "field": "csat_scale11",    "values": ""},                       # *_scale11 -> 0..10
-    {"Name": "mood",          "field": "mood_enum",       "values": "happy,neutral, sad"},     # *_enum/_alt -> enum from values
-    {"Name": "note",          "field": "feedback_cmt",    "values": ""},                       # *_cmt -> sentiment comment
-    {"Name": "unit",          "field": "UNIT",            "values": "kg,g,lb"},                # UNIT   -> enum from values
+    {"Name": "id",                         "field": "user_auto",        "values": ""},                         # *_auto -> sequential ID
+    {"Name": "uuid",                       "field": "user_txt",         "values": ""},                         # *_txt  -> UUID
+    {"Name": "contact_email",              "field": "contact_email",    "values": ""},                         # *_email -> Email
+    {"Name": "answer",                     "field": "question_yn",      "values": "1,2"},                      # values -> enum override
+    {"Name": "visit_date",                 "field": "visit_date",       "values": ""},                         # *_date -> random date
+    {"Name": "rating",                     "field": "csat_scale11",     "values": ""},                         # *_scale11 -> 0..10
+    {"Name": "mood",                       "field": "mood_enum",        "values": "happy,neutral,sad"},        # values -> enum
+    {"Name": "note",                       "field": "feedback_cmt",     "values": ""},                         # *_cmt -> sentiment comment
+    {"Name": "unit",                       "field": "UNIT",             "values": "kg,g,lb"},                  # values -> enum
+    {"Name": "client_name|client_id",      "field": "client_group",     "values": "Acme|A001; Beta|B002; Gamma|G003"},  # NEW: Grouped Enum
 ])
 
 def _to_csv_bytes(df: pd.DataFrame) -> io.BytesIO:
@@ -915,12 +1011,15 @@ with colB:
         use_container_width=True
     )
 
-st.caption("Templates include required headers: **Name, field, values**. Fill and upload in the sidebar.")
+st.caption("Templates include required headers: **Name, field, values**. "
+           "For Grouped Enum, put multiple output column names in **Name** separated by `|`, "
+           "and group options in **values** separated by `;` with fields inside each group separated by `|`.")
 
 # ---------------
 # Generate & show
 # ---------------
-df = generate_dummy_data(rows, schema, global_timeline=global_timeline)
+schema_to_use = schema  # includes uploaded-edited or manual
+df = generate_dummy_data(rows, schema_to_use, global_timeline=global_timeline)
 
 st.subheader(f"Preview of {rows} rows")
 st.dataframe(df, use_container_width=True)
