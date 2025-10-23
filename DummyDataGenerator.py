@@ -258,7 +258,13 @@ def read_uploaded_schema(file) -> pd.DataFrame:
 # Data generation engine
 # -----------------------
 def generate_dummy_data(rows, schema, global_timeline=None):
-    # PASS 1: base rows
+    """
+    Generate dataset:
+      - First pass: generate non-comment, non-conditional fields (so date fields exist)
+      - Second pass: generate comment fields (trend-aware)
+      - Third pass: evaluate conditional ranges & sequential IDs
+    """
+    # PASS 1: base rows (includes Constants & Custom Enums)
     base_rows = []
     for i in range(rows):
         row = {}
@@ -307,6 +313,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 else:
                     row[fname] = None
                 continue
+            # skip comment and conditional-range types here (we'll handle later)
             if ftype in ("Comment (Sentiment)", "Conditional Range (Based on Comment Sentiment)"):
                 continue
             gen = FIELD_TYPES.get(ftype)
@@ -316,7 +323,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 row[fname] = None
         base_rows.append(row)
 
-    # sequential dates
+    # Generate sequential dates for all Date (Sequential) fields
     for field in schema:
         if field["type"] == "Date (Sequential)":
             fname = field["name"]
@@ -327,7 +334,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             for i, row in enumerate(base_rows):
                 row[fname] = date_list[i]
 
-    # PASS 2: comments
+    # PASS 2: comments (trend aware)
     sentiments_per_row = [dict() for _ in range(rows)]
 
     def _compute_date_range(field_name):
@@ -349,9 +356,11 @@ def generate_dummy_data(rows, schema, global_timeline=None):
         for field in schema:
             fname = field["name"]
             ftype = field["type"]
+
             if ftype != "Comment (Sentiment)":
                 continue
 
+            # Trend settings
             trend_enabled = field.get("trend_enabled", False)
             trend_type = field.get("trend_type", "Increasing Positive")
             trend_strength = float(field.get("trend_strength", 0.5))
@@ -420,9 +429,10 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             row[fname] = comment_text
             sentiments_per_row[i][fname] = sentiment
 
-    # PASS 3: conditional ranges & sequential IDs
+    # PASS 3: conditional ranges and sequential ids
     final_rows = []
     for i, row in enumerate(base_rows):
+        # Sequential IDs: any field of that type should be added now
         for field in schema:
             fname = field["name"]
             ftype = field["type"]
@@ -475,7 +485,20 @@ st.title("📊 Custom Dummy Data Generator")
 st.markdown("Generate dummy data with manual fields **or** from an uploaded CSV/XLSX schema (columns: **Name, field, values**).")
 
 st.sidebar.header("⚙️ Settings")
-rows = st.sidebar.slider("Number of rows", 10, 100000, 100, step=10)
+
+# Rows input: slider or number field
+st.sidebar.subheader("Rows")
+rows_input_mode = st.sidebar.radio(
+    "Input mode",
+    ["Slider", "Number"],
+    horizontal=True,
+    key="rows_input_mode"
+)
+if rows_input_mode == "Slider":
+    rows = st.sidebar.slider("Number of rows", min_value=10, max_value=100000, value=100, step=10, key="rows_slider")
+else:
+    rows = st.sidebar.number_input("Number of rows", min_value=1, max_value=1_000_000, value=100, step=1, key="rows_number")
+rows = int(rows)
 
 # Global timeline (optional)
 st.sidebar.subheader("📈 Global timeline (optional)")
@@ -527,13 +550,12 @@ DEFAULT_FIELD_ORDER = [
 ]
 
 # ----------------------------
-# NEW: Editable uploaded schema
+# Editable uploaded schema
 # ----------------------------
 def _ensure_session_schema(items: List[Dict[str, Any]]):
-    # give each item a stable uid to keep widget keys stable across reruns
     out = []
     for it in items:
-        it = dict(it)  # shallow copy
+        it = dict(it)
         if "_uid" not in it:
             it["_uid"] = str(uuid.uuid4())
         out.append(it)
@@ -547,16 +569,18 @@ def _render_field_editor(item: Dict[str, Any], idx: int):
         with top[0]:
             item["name"] = st.text_input("Name", value=item.get("name", f"Field{idx+1}"), key=f"name_{uid}")
         with top[1]:
-            # choose type
             current_type = item.get("type", "Custom Text")
             if current_type not in type_options:
                 current_type = "Custom Text"
-            item["type"] = st.selectbox("Type", options=type_options, index=type_options.index(current_type), key=f"type_{uid}")
+            try:
+                type_index = type_options.index(current_type)
+            except ValueError:
+                type_index = 0
+            item["type"] = st.selectbox("Type", options=type_options, index=type_index, key=f"type_{uid}")
         with top[2]:
             if st.button("🗑️", key=f"del_{uid}", help="Delete this field", use_container_width=True):
                 return "DELETE"
 
-        # per-type params
         ftype = item["type"]
 
         if ftype == "Unique ID (Sequential)":
@@ -567,8 +591,10 @@ def _render_field_editor(item: Dict[str, Any], idx: int):
             st.caption("Width = digits(start) + zeros. Example: start=1, zeros=3 → 0001")
 
         if ftype == "Date (Sequential)":
-            item["seq_start_date"] = st.date_input("Start date", value=item.get("seq_start_date", datetime.now().date() - timedelta(days=365)), key=f"seq_date_start_{uid}")
-            item["seq_end_date"] = st.date_input("End date", value=item.get("seq_end_date", datetime.now().date()), key=f"seq_date_end_{uid}")
+            default_start = item.get("seq_start_date") or (datetime.now().date() - timedelta(days=365))
+            default_end   = item.get("seq_end_date")   or datetime.now().date()
+            item["seq_start_date"] = st.date_input("Start date", value=default_start, key=f"seq_date_start_{uid}")
+            item["seq_end_date"] = st.date_input("End date", value=default_end, key=f"seq_date_end_{uid}")
             item["entries_per_date"] = int(st.number_input("Max entries per date", min_value=1, value=int(item.get("entries_per_date", 1)), step=1, key=f"entries_per_date_{uid}"))
             st.caption("Dates will be sequential. Multiple rows can share the same date up to the max specified.")
 
@@ -653,21 +679,24 @@ if schema_from_upload_mode:
                 to_delete.append(item["_uid"])
         if to_delete:
             st.session_state.schema_items = [it for it in st.session_state.schema_items if it["_uid"] not in to_delete]
-            st.experimental_rerun()
+            st.rerun()
 
-    # Optional controls
     cols = st.columns(2)
     if cols[0].button("➕ Add empty field"):
-        st.session_state.schema_items.append({"name": f"Field{len(st.session_state.schema_items)+1}", "type": "Custom Text", "_uid": str(uuid.uuid4())})
-        st.experimental_rerun()
+        st.session_state.schema_items.append({
+            "_uid": str(uuid.uuid4()),
+            "name": f"Field{len(st.session_state.schema_items)+1}",
+            "type": "Custom Text"
+        })
+        st.rerun()
     if cols[1].button("🧹 Clear uploaded schema"):
         st.session_state.schema_items = []
-        st.experimental_rerun()
+        st.rerun()
 
-    schema: List[Dict[str, Any]] = [ {k:v for k,v in it.items() if k != "_uid"} for it in st.session_state.schema_items ]
+    schema: List[Dict[str, Any]] = [{k: v for k, v in it.items() if k != "_uid"} for it in st.session_state.schema_items]
 
 else:
-    # Manual builder (unchanged)
+    # Manual builder
     st.sidebar.subheader("🛠️ Add Custom Fields (manual)")
     num_fields = st.sidebar.number_input("Number of fields", 1, 40, 4)
     schema: List[Dict[str, Any]] = []
