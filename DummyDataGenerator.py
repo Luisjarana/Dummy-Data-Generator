@@ -157,7 +157,6 @@ def _safe_str(x: Any) -> str:
     try:
         if x is None:
             return ""
-        # pandas/NumPy NA
         try:
             if pd.isna(x):
                 return ""
@@ -231,7 +230,6 @@ def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
     return {"name": n, "type": "Custom Text"}
 
 def build_schema_from_dataframe(upload_df: pd.DataFrame) -> List[Dict[str, Any]]:
-    # Normalize columns and validate
     cols = {c.strip().lower(): c for c in upload_df.columns}
     required = ["name", "field", "values"]
     for r in required:
@@ -260,13 +258,7 @@ def read_uploaded_schema(file) -> pd.DataFrame:
 # Data generation engine
 # -----------------------
 def generate_dummy_data(rows, schema, global_timeline=None):
-    """
-    Generate dataset:
-      - First pass: generate non-comment, non-conditional fields (so date fields exist)
-      - Second pass: generate comment fields (trend-aware)
-      - Third pass: evaluate conditional ranges & sequential IDs
-    """
-    # PASS 1: base rows (includes Constants & Custom Enums)
+    # PASS 1: base rows
     base_rows = []
     for i in range(rows):
         row = {}
@@ -315,7 +307,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 else:
                     row[fname] = None
                 continue
-            # skip comment and conditional-range types here (we'll handle later)
             if ftype in ("Comment (Sentiment)", "Conditional Range (Based on Comment Sentiment)"):
                 continue
             gen = FIELD_TYPES.get(ftype)
@@ -325,7 +316,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 row[fname] = None
         base_rows.append(row)
 
-    # Generate sequential dates for all Date (Sequential) fields
+    # sequential dates
     for field in schema:
         if field["type"] == "Date (Sequential)":
             fname = field["name"]
@@ -336,7 +327,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             for i, row in enumerate(base_rows):
                 row[fname] = date_list[i]
 
-    # PASS 2: comments (trend aware)
+    # PASS 2: comments
     sentiments_per_row = [dict() for _ in range(rows)]
 
     def _compute_date_range(field_name):
@@ -358,11 +349,9 @@ def generate_dummy_data(rows, schema, global_timeline=None):
         for field in schema:
             fname = field["name"]
             ftype = field["type"]
-
             if ftype != "Comment (Sentiment)":
                 continue
 
-            # Trend settings
             trend_enabled = field.get("trend_enabled", False)
             trend_type = field.get("trend_type", "Increasing Positive")
             trend_strength = float(field.get("trend_strength", 0.5))
@@ -431,10 +420,9 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             row[fname] = comment_text
             sentiments_per_row[i][fname] = sentiment
 
-    # PASS 3: conditional ranges and sequential ids
+    # PASS 3: conditional ranges & sequential IDs
     final_rows = []
     for i, row in enumerate(base_rows):
-        # Sequential IDs: any field of that type should be added now
         for field in schema:
             fname = field["name"]
             ftype = field["type"]
@@ -505,7 +493,6 @@ if use_global_timeline:
 st.sidebar.subheader("📄 Upload schema (CSV/XLSX)")
 uploaded_file = st.sidebar.file_uploader("Schema file with columns: Name, field, values", type=["csv", "xlsx", "xls"])
 
-schema: List[Dict[str, Any]] = []
 type_options = list(FIELD_TYPES.keys())
 
 EMOJI = {
@@ -539,22 +526,151 @@ DEFAULT_FIELD_ORDER = [
     ("LTR", "Conditional Range (Based on Comment Sentiment)"),
 ]
 
-# If a schema file is uploaded, build schema from it; else use manual builder
+# ----------------------------
+# NEW: Editable uploaded schema
+# ----------------------------
+def _ensure_session_schema(items: List[Dict[str, Any]]):
+    # give each item a stable uid to keep widget keys stable across reruns
+    out = []
+    for it in items:
+        it = dict(it)  # shallow copy
+        if "_uid" not in it:
+            it["_uid"] = str(uuid.uuid4())
+        out.append(it)
+    return out
+
+def _render_field_editor(item: Dict[str, Any], idx: int):
+    """Render one field editor row with delete button; mutate item in-place via session_state widgets."""
+    uid = item["_uid"]
+    with st.expander(f"{EMOJI.get(item.get('type'), '')} Field {idx+1}: {item.get('name','')}", expanded=(idx < 6)):
+        top = st.columns([3, 3, 1])
+        with top[0]:
+            item["name"] = st.text_input("Name", value=item.get("name", f"Field{idx+1}"), key=f"name_{uid}")
+        with top[1]:
+            # choose type
+            current_type = item.get("type", "Custom Text")
+            if current_type not in type_options:
+                current_type = "Custom Text"
+            item["type"] = st.selectbox("Type", options=type_options, index=type_options.index(current_type), key=f"type_{uid}")
+        with top[2]:
+            if st.button("🗑️", key=f"del_{uid}", help="Delete this field", use_container_width=True):
+                return "DELETE"
+
+        # per-type params
+        ftype = item["type"]
+
+        if ftype == "Unique ID (Sequential)":
+            cols = st.columns(3)
+            item["start"] = int(cols[0].number_input("Start", value=int(item.get("start", 1)), step=1, key=f"seq_start_{uid}"))
+            item["step"] = int(cols[1].number_input("Step", value=int(item.get("step", 1)), step=1, key=f"seq_step_{uid}"))
+            item["pad_zeros"] = int(cols[2].number_input("Zeros (additional)", min_value=0, value=int(item.get("pad_zeros", 3)), step=1, key=f"seq_pad_{uid}"))
+            st.caption("Width = digits(start) + zeros. Example: start=1, zeros=3 → 0001")
+
+        if ftype == "Date (Sequential)":
+            item["seq_start_date"] = st.date_input("Start date", value=item.get("seq_start_date", datetime.now().date() - timedelta(days=365)), key=f"seq_date_start_{uid}")
+            item["seq_end_date"] = st.date_input("End date", value=item.get("seq_end_date", datetime.now().date()), key=f"seq_date_end_{uid}")
+            item["entries_per_date"] = int(st.number_input("Max entries per date", min_value=1, value=int(item.get("entries_per_date", 1)), step=1, key=f"entries_per_date_{uid}"))
+            st.caption("Dates will be sequential. Multiple rows can share the same date up to the max specified.")
+
+        if ftype == "Constant":
+            item["value"] = st.text_input("Constant value", value=item.get("value", ""), key=f"const_val_{uid}")
+
+        if ftype == "Custom Enum":
+            item["values_raw"] = st.text_area("Enum values (comma-separated)", value=item.get("values_raw", "A,B,C"), key=f"enum_vals_{uid}")
+            item["enum_mode"] = st.selectbox("Mode", options=["Random", "Cycle"], index=0 if item.get("enum_mode","Random")=="Random" else 1, key=f"enum_mode_{uid}")
+            item["weights_raw"] = st.text_input("Optional weights (same length)", value=item.get("weights_raw", ""), key=f"enum_weights_{uid}")
+            st.caption("Random = weighted/uniform random pick. Cycle = round-robin per row.")
+
+        if ftype == "Range (0-10)":
+            cols = st.columns(4)
+            item["min"] = int(cols[0].number_input("Min", value=int(item.get("min", 0)), key=f"min_{uid}"))
+            item["max"] = int(cols[1].number_input("Max", value=int(item.get("max", 10)), key=f"max_{uid}"))
+            item["float"] = bool(cols[2].checkbox("Float?", value=bool(item.get("float", False)), key=f"float_{uid}"))
+            item["precision"] = int(cols[3].number_input("Precision", min_value=0, max_value=6, value=int(item.get("precision", 2)), key=f"prec_{uid}"))
+
+        if ftype == "Comment (Sentiment)":
+            item["sentiment"] = st.selectbox("Sentiment (override)", options=["Random", "Positive", "Neutral", "Negative"], index=["Random","Positive","Neutral","Negative"].index(item.get("sentiment","Random")), key=f"sent_{uid}")
+            st.markdown("**Trend over time**")
+            item["trend_enabled"] = bool(st.checkbox("Enable trend", value=bool(item.get("trend_enabled", False)), key=f"trend_enabled_{uid}"))
+            if item["trend_enabled"]:
+                item["timeline_source"] = st.selectbox("Timeline source", options=["Global timeline", "Date field"], index=0 if item.get("timeline_source","Global timeline")=="Global timeline" else 1, key=f"tl_src_{uid}")
+                if item["timeline_source"] == "Date field":
+                    item["timeline_date_field"] = st.text_input("Date field name", value=item.get("timeline_date_field",""), key=f"df_ref_{uid}")
+                item["trend_type"] = st.selectbox("Trend type", options=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"], index=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"].index(item.get("trend_type","Increasing Positive")), key=f"trend_type_{uid}")
+                item["trend_strength"] = float(st.slider("Trend strength", 0.0, 1.0, float(item.get("trend_strength", 0.5)), step=0.01, key=f"trend_strength_{uid}"))
+                item["base_preset"] = st.selectbox("Base distribution", options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], index=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"].index(item.get("base_preset","Balanced")), key=f"base_preset_{uid}")
+
+        if ftype == "Conditional Range (Based on Comment Sentiment)":
+            item["depends_on"] = st.text_input("Depends on (comment field name)", value=item.get("depends_on",""), key=f"cr_dep_{uid}")
+            st.markdown("**Ranges by sentiment**")
+            cols1 = st.columns(2)
+            item["positive_min"] = int(cols1[0].number_input("Pos min", value=int(item.get("positive_min", 9)), key=f"pmin_{uid}"))
+            item["positive_max"] = int(cols1[1].number_input("Pos max", value=int(item.get("positive_max", 10)), key=f"pmax_{uid}"))
+            cols2 = st.columns(2)
+            item["neutral_min"] = int(cols2[0].number_input("Neu min", value=int(item.get("neutral_min", 7)), key=f"nmin_{uid}"))
+            item["neutral_max"] = int(cols2[1].number_input("Neu max", value=int(item.get("neutral_max", 8)), key=f"nmax_{uid}"))
+            cols3 = st.columns(2)
+            item["negative_min"] = int(cols3[0].number_input("Neg min", value=int(item.get("negative_min", 0)), key=f"negmin_{uid}"))
+            item["negative_max"] = int(cols3[1].number_input("Neg max", value=int(item.get("negative_max", 6)), key=f"negmax_{uid}"))
+            cols4 = st.columns(3)
+            item["any_min"] = int(cols4[0].number_input("Any min", value=int(item.get("any_min", 0)), key=f"amin_{uid}"))
+            item["any_max"] = int(cols4[1].number_input("Any max", value=int(item.get("any_max", 10)), key=f"amax_{uid}"))
+            item["float"] = bool(cols4[2].checkbox("Float?", value=bool(item.get("float", False)), key=f"cr_float_{uid}"))
+            if item["float"]:
+                item["precision"] = int(st.number_input("Precision", min_value=0, max_value=6, value=int(item.get("precision", 2)), key=f"cr_prec_{uid}"))
+        return "OK"
+
+# Keep an app-level storage of uploaded/parsed fields for editing
+if "schema_items" not in st.session_state:
+    st.session_state.schema_items: List[Dict[str, Any]] = []
+if "schema_loaded_name" not in st.session_state:
+    st.session_state.schema_loaded_name = None
+
+schema_from_upload_mode = False
 if uploaded_file:
     try:
         upload_df = read_uploaded_schema(uploaded_file)
         parsed_schema = build_schema_from_dataframe(upload_df)
-        schema = parsed_schema
-
-        with st.expander("🔍 Parsed schema (from file)", expanded=False):
-            st.dataframe(pd.DataFrame(schema))
+        # initialize only when a new file is loaded or filename changed
+        if st.session_state.schema_loaded_name != uploaded_file.name:
+            st.session_state.schema_items = _ensure_session_schema(parsed_schema)
+            st.session_state.schema_loaded_name = uploaded_file.name
+        schema_from_upload_mode = True
     except Exception as e:
         st.error(f"Failed to read/parse schema: {e}")
         st.stop()
+
+# If uploaded schema -> editable list
+if schema_from_upload_mode:
+    st.subheader("🧩 Editable fields (from uploaded schema)")
+    if len(st.session_state.schema_items) == 0:
+        st.info("No fields parsed yet. Upload a CSV/XLSX or switch to manual fields.")
+    else:
+        to_delete = []
+        for i, item in enumerate(st.session_state.schema_items):
+            result = _render_field_editor(item, i)
+            if result == "DELETE":
+                to_delete.append(item["_uid"])
+        if to_delete:
+            st.session_state.schema_items = [it for it in st.session_state.schema_items if it["_uid"] not in to_delete]
+            st.experimental_rerun()
+
+    # Optional controls
+    cols = st.columns(2)
+    if cols[0].button("➕ Add empty field"):
+        st.session_state.schema_items.append({"name": f"Field{len(st.session_state.schema_items)+1}", "type": "Custom Text", "_uid": str(uuid.uuid4())})
+        st.experimental_rerun()
+    if cols[1].button("🧹 Clear uploaded schema"):
+        st.session_state.schema_items = []
+        st.experimental_rerun()
+
+    schema: List[Dict[str, Any]] = [ {k:v for k,v in it.items() if k != "_uid"} for it in st.session_state.schema_items ]
+
 else:
+    # Manual builder (unchanged)
     st.sidebar.subheader("🛠️ Add Custom Fields (manual)")
     num_fields = st.sidebar.number_input("Number of fields", 1, 40, 4)
-
+    schema: List[Dict[str, Any]] = []
     for i in range(num_fields):
         with st.sidebar.expander(f"Field {i+1}", expanded=(i < 6)):
             col1, col2 = st.columns([2, 2])
