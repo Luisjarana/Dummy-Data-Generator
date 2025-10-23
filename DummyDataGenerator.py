@@ -575,7 +575,7 @@ DEFAULT_FIELD_ORDER = [
 ]
 
 # ----------------------------
-# Editable uploaded schema in LEFT column (+ Search) — MAIN AREA (not sidebar)
+# Editable uploaded schema — CENTERED
 # ----------------------------
 def _ensure_session_schema(items: List[Dict[str, Any]]):
     out = []
@@ -679,7 +679,6 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
         if ftype == "Conditional Range (Based on Comment Sentiment)":
             st.markdown("**Depends on (comment field)**")
             if all_comment_names:
-                # dropdown of all available comment fields
                 default_name = item.get("depends_on", all_comment_names[0] if all_comment_names else "")
                 try:
                     default_idx = all_comment_names.index(default_name)
@@ -729,15 +728,13 @@ if uploaded_file:
         st.error(f"Failed to read/parse schema: {e}")
         st.stop()
 
-# Layout for main area: left editor / right side (spacer/help)
-left_col, right_col = st.columns([1.2, 1])
-
-# If uploaded schema -> editable list in LEFT column (with SEARCH) — MAIN, not sidebar
+# ===== CENTERED layout for field editors when using uploaded schema =====
 if schema_from_upload_mode:
-    with left_col:
-        st.subheader("🧩 Fields (from CSV/XLSX)")
+    spacer_left, center_col, spacer_right = st.columns([0.5, 1.6, 0.5])
+    with center_col:
+        st.subheader("🧩 Fields (from CSV/XLSX) — Centered")
 
-        # 🔎 Search bar (kept simple; no session_state mutation)
+        # 🔎 Search bar
         search_query = st.text_input(
             "Search fields (matches name / type / enum values)",
             value="",
@@ -759,7 +756,7 @@ if schema_from_upload_mode:
                 names_part = " ".join([s.lower() for s in it.get("group_fields", [])])
                 values_part = "; ".join(["|".join(g) for g in it.get("group_values", [])]).lower()
                 return f"{ftype} {names_part} {values_part}"
-            else:
+        else:
                 name_part = _safe_lower(it.get("name", ""))
                 values_part = _safe_lower(it.get("values_raw", ""))
                 return f"{ftype} {name_part} {values_part}"
@@ -797,15 +794,6 @@ if schema_from_upload_mode:
         if cols[1].button("🧹 Clear uploaded schema"):
             st.session_state.schema_items = []
             st.experimental_rerun()
-
-    with right_col:
-        st.subheader("ℹ️ Tips")
-        st.markdown(
-            "- The field editors live here on the main page (left).\n"
-            "- Conditional ranges use a dropdown of available **comment** fields.\n"
-            "- Grouped enums output **multiple columns** at once.\n"
-            "- Date fields include a time component and are formatted at export."
-        )
 
     # Build schema to use (strip _uid)
     schema: List[Dict[str, Any]] = [{k: v for k, v in it.items() if k != "_uid"} for it in st.session_state.schema_items]
@@ -1052,7 +1040,6 @@ schema_to_use = schema
 df = generate_dummy_data(rows, schema_to_use, global_timeline=global_timeline)
 
 # ✅ Format date columns as "mm/dd/yyyy, %I:%M %p"
-# Find date columns from schema (skip grouped enum which produces multiple)
 date_cols = [f.get("name") for f in schema_to_use
              if f.get("type") in ("Date", "Date (Sequential)") and f.get("name")]
 
