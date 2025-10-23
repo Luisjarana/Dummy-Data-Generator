@@ -247,9 +247,8 @@ EMOJI = {
     "const": "🔒", "cenum": "🧩", "genum": "🧩👥",
 }
 
-# Reverse label → code (for legacy migration)
 LABEL_TO_CODE = {ft_label("en", c): c for c in FT_CODES}
-LABEL_TO_CODE.update({c: c for c in FT_CODES})  # accept raw codes too
+LABEL_TO_CODE.update({c: c for c in FT_CODES})
 
 # ==============
 # Streamlit page
@@ -284,7 +283,7 @@ FIELD_GEN = {
     "age": lambda: random.randint(18, 70),
     "job": lambda: fake.job(),
     "country": lambda: fake.country(),
-    "date": lambda: fake.date_time_between(start_date="-5y", end_date="now"),  # datetime
+    "date": lambda: fake.date_time_between(start_date="-5y", end_date="now"),
     "date_seq": None,
     "ctext": lambda: fake.word(),
     "cnum": lambda: random.randint(1000, 9999),
@@ -464,22 +463,27 @@ def _random_time():
 def _clear_schema_search():
     st.session_state["schema_search"] = ""
 
-# ---------- NEW: bound select helper ----------
+# ---------- NEW: bound select helper (hardened) ----------
 def _select_bound(ui, *, key: str, options: list, current, label: str, format_func=None):
-    """Selectbox bound to session_state[key]. Seeds to 'current' when missing/invalid."""
-    # If options are dynamic (e.g., depends_on), keep a copy to validate
+    """
+    Selectbox bound to session_state[key]. Robust to:
+      - format_func=None (always passes a callable)
+      - empty options (renders a disabled placeholder and returns None)
+    """
+    if not options:
+        ui.text_input(label, value="—", disabled=True, key=f"{key}_disabled")
+        return None
     if key not in st.session_state or st.session_state[key] not in options:
-        # Seed with current if valid, else first option (or None)
-        st.session_state[key] = current if current in options else (options[0] if options else None)
-    return ui.selectbox(label, options=options, key=key, format_func=format_func)
+        st.session_state[key] = current if current in options else options[0]
+    fmt = (format_func or (lambda x: x))
+    return ui.selectbox(label, options=options, key=key, format_func=fmt)
 
-# ---------- migration helpers (fixes dropdown mismatch) ----------
+# ---------- migration helpers ----------
 def _ensure_uid(item: Dict[str, Any]) -> None:
     if "_uid" not in item or not item["_uid"]:
         item["_uid"] = str(uuid.uuid4())
 
 def _migrate_type_to_ft(item: Dict[str, Any]) -> None:
-    """Normalize an item to have 'ft' code; accept legacy 'type' labels/codes."""
     if "ft" in item and item["ft"] in FT_CODES:
         return
     legacy_type = item.get("type")
@@ -564,7 +568,6 @@ def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
     f = _safe_lower(field_code)
     v = _safe_str(values).strip()
 
-    # Force enum if values present
     if v:
         if ("|" in n_raw) or ("|" in v):
             group_fields = [s.strip() for s in n_raw.split("|") if s.strip() != ""]
@@ -582,7 +585,6 @@ def map_row_to_field(name: str, field_code: str, values: str) -> Dict[str, Any]:
         return {"name": n_raw, "ft": "cenum", "values_raw": ",".join(enum_vals),
                 "enum_mode": "Random", "weights_raw": "", "_uid": str(uuid.uuid4())}
 
-    # Suffix rules when no values provided
     if f.endswith("_auto"):
         return {"name": n_raw, "ft": "seq", "start": 1, "step": 1, "pad_zeros": 3, "_uid": str(uuid.uuid4())}
     if f.endswith("_txt"):
@@ -634,7 +636,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
         for field in schema:
             ft = field["ft"]
 
-            # Grouped Enum writes multiple columns
             if ft == "genum":
                 group_fields = field.get("group_fields", [])
                 grouped = field.get("group_values", [])
@@ -690,7 +691,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             row[fname] = gen() if callable(gen) else None
         base_rows.append(row)
 
-    # Sequential dates with random time
     for field in schema:
         if field["ft"] == "date_seq":
             fname = field["name"]
@@ -702,7 +702,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 d = pd.to_datetime(date_list[i]).date()
                 row[fname] = datetime.combine(d, _random_time())
 
-    # Comments (trend-aware)
     sentiments_per_row = [dict() for _ in range(rows)]
 
     def _compute_date_range(field_name):
@@ -793,7 +792,6 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             row[fname] = comment_text
             sentiments_per_row[i][fname] = sentiment
 
-    # Conditional ranges and sequential IDs
     final_rows = []
     for i, row in enumerate(base_rows):
         for field in schema:
@@ -889,7 +887,6 @@ if uploaded_file:
         st.error(f"{t(lang,'failed_parse')}: {e}")
         st.stop()
 
-# ALWAYS normalize whatever is in session (handles legacy items)
 st.session_state.schema_items = _normalize_items(st.session_state.schema_items)
 
 def _item_search_text(it: Dict[str, Any]) -> str:
@@ -914,7 +911,6 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
             else:
                 item["name"] = ui.text_input(t(lang,"name"), value=item.get("name", f"{t(lang,'field_label')} {idx+1}"), key=f"name_{uid}")
         with top[1]:
-            # ✅ Bound selectbox for Type
             item["ft"] = _select_bound(
                 ui,
                 key=f"type_{uid}",
@@ -1046,23 +1042,20 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
                 item["precision"] = int(ui.number_input(t(lang,"precision"), min_value=0, max_value=6, value=int(item.get("precision", 2)), key=f"cr_prec_{uid}"))
     return "OK"
 
-# Build editor if CSV uploaded; else manual builder
 schema_from_upload_mode = bool(uploaded_file)
 
 if schema_from_upload_mode:
     st.sidebar.subheader(t(lang, "csv_fields"))
 
-    # Search box (no 'value='). Clear via callback.
     search_query_raw = st.sidebar.text_input(t(lang, "search"), key="schema_search", placeholder=t(lang, "search_ph"))
     search_query = (search_query_raw or "").strip().lower()
     c1, c2 = st.sidebar.columns([3, 1])
     with c2:
         st.sidebar.button(t(lang, "clear"), key="clear_search_btn", on_click=_clear_schema_search)
 
-    items = st.session_state.schema_items  # already normalized
+    items = st.session_state.schema_items
     display_items = [it for it in items if (search_query in _item_search_text(it))] if search_query else items
 
-    # collect all comment names from FULL list (not filtered)
     all_comment_names = [it.get("name","").strip() for it in items if it.get("ft") == "comment" and it.get("name","").strip()]
 
     with c1:
@@ -1095,7 +1088,6 @@ if schema_from_upload_mode:
     schema: List[Dict[str, Any]] = [{k: v for k, v in it.items() if k != "_uid"} for it in st.session_state.schema_items]
 
 else:
-    # Manual builder (sidebar)
     st.sidebar.subheader("🛠️ Add Custom Fields" if lang=="en" else "🛠️ Agregar Campos")
     num_fields = st.sidebar.number_input("Number of fields" if lang=="en" else "Número de campos", 1, 40, 4)
     schema: List[Dict[str, Any]] = []
@@ -1117,14 +1109,11 @@ else:
                 field_name = st.text_input(t(lang,"name"), value=default_name, key=f"name_{i}")
 
             with col2:
-                # Bound selectbox for manual builder type too
                 ft_key = f"type_{i}"
                 if ft_key not in st.session_state:
                     st.session_state[ft_key] = default_code
-                ft_code = _select_bound(
-                    st, key=ft_key, options=FT_CODES, current=st.session_state[ft_key],
-                    label=t(lang,"type"), format_func=lambda c: ft_label(lang, c)
-                )
+                ft_code = _select_bound(st, key=ft_key, options=FT_CODES, current=st.session_state[ft_key],
+                                        label=t(lang,"type"), format_func=lambda c: ft_label(lang, c))
 
             st.markdown(f"**{EMOJI.get(ft_code,'')} {field_name or default_name} — _{ft_label(lang, ft_code)}_**")
             field_def = {"ft": ft_code}
@@ -1132,7 +1121,6 @@ else:
             if ft_code == "genum":
                 gf = st.text_input(t(lang,"grouped_fields"), value=f"{(field_name or default_name)}_name|{(field_name or default_name)}_id", key=f"m_group_fields_{i}")
                 gv = st.text_area(t(lang,"grouped_values"), value="Acme|A001; Beta|B002", key=f"m_group_values_{i}")
-                # Bound 'mode'
                 gm_key = f"m_group_mode_{i}"
                 if gm_key not in st.session_state:
                     st.session_state[gm_key] = "Random"
@@ -1227,7 +1215,6 @@ else:
                     field_def["base_preset"] = base_preset
 
             if ft_code == "cond_range":
-                # collect comment fields up to now
                 comment_field_options = [f["name"] for f in schema if f.get("ft") == "comment"]
                 if comment_field_options:
                     dep_key = f"cr_dep_choice_{i}"
