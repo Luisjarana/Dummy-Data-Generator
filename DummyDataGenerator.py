@@ -769,10 +769,6 @@ if schema_from_upload_mode:
         c1, c2 = st.columns([3,1])
         with c1:
             st.caption(f"Showing {len(display_items)} of {len(items)} fields")
-        with c2:
-            if search_query and st.button("Clear search"):
-                st.rerun()
-
         if len(display_items) == 0:
             st.info("No fields match your search.")
         else:
