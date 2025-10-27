@@ -391,6 +391,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 continue
             fname = field["name"]
 
+            # --- read settings ---
             trend_enabled = field.get("trend_enabled", False)
             trend_type = field.get("trend_type", "Increasing Positive")
             trend_strength = float(field.get("trend_strength", 0.5))
@@ -398,17 +399,34 @@ def generate_dummy_data(rows, schema, global_timeline=None):
             date_field_ref = field.get("timeline_date_field", "")
             base_preset = field.get("base_preset", "Balanced")
 
-            if base_preset == "Balanced":
-                base_prob = (0.34, 0.33, 0.33)
-            elif base_preset == "Positive-heavy":
-                base_prob = (0.6, 0.2, 0.2)
-            elif base_preset == "Negative-heavy":
-                base_prob = (0.2, 0.2, 0.6)
-            elif base_preset == "Neutral-heavy":
-                base_prob = (0.2, 0.6, 0.2)
-            else:
-                base_prob = (0.34, 0.33, 0.33)
+            # New: explicit percentages option (percentages expected as 0-100)
+            use_percentages = bool(field.get("use_percentages", False))
+            p_pos_pct = float(field.get("percent_positive", 0.0) or 0.0)
+            p_neu_pct = float(field.get("percent_neutral", 0.0) or 0.0)
+            p_neg_pct = float(field.get("percent_negative", 0.0) or 0.0)
 
+            # If percentages are provided and sum>0, use them as base distribution (normalize)
+            if use_percentages:
+                total_pct = p_pos_pct + p_neu_pct + p_neg_pct
+                if total_pct > 0:
+                    base_prob = (p_pos_pct / total_pct, p_neu_pct / total_pct, p_neg_pct / total_pct)
+                else:
+                    # fallback to base_preset if user enabled percentages but left zeroes
+                    base_prob = (0.34, 0.33, 0.33)
+            else:
+                # existing presets
+                if base_preset == "Balanced":
+                    base_prob = (0.34, 0.33, 0.33)
+                elif base_preset == "Positive-heavy":
+                    base_prob = (0.6, 0.2, 0.2)
+                elif base_preset == "Negative-heavy":
+                    base_prob = (0.2, 0.2, 0.6)
+                elif base_preset == "Neutral-heavy":
+                    base_prob = (0.2, 0.6, 0.2)
+                else:
+                    base_prob = (0.34, 0.33, 0.33)
+
+            # compute time factor if trend enabled
             time_factor = 0.0
             if trend_enabled:
                 if timeline_source == "Global timeline":
@@ -430,9 +448,11 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 else:
                     time_factor = (i / (rows - 1)) if rows > 1 else 0.0
 
+            # apply trend on top of the base distribution if trend enabled
             if trend_enabled:
                 p_pos, p_neu, p_neg = _apply_trend(base_prob, time_factor, trend_type, trend_strength)
             else:
+                # If a manual override for sentiment is used (Positive/Neutral/Negative selection)
                 sentiment_choice = field.get("sentiment", "Random")
                 if sentiment_choice == "Random":
                     p_pos, p_neu, p_neg = base_prob
@@ -445,6 +465,7 @@ def generate_dummy_data(rows, schema, global_timeline=None):
                 else:
                     p_pos, p_neu, p_neg = base_prob
 
+            # sample sentiment according to probabilities
             r = random.random()
             if r < p_pos:
                 sentiment = "Positive"
@@ -583,6 +604,12 @@ def _ensure_session_schema(items: List[Dict[str, Any]]):
         it = dict(it)
         if "_uid" not in it:
             it["_uid"] = str(uuid.uuid4())
+        # set defaults for the new percentage fields so older session_items still work
+        if it.get("type") == "Comment (Sentiment)":
+            it.setdefault("use_percentages", False)
+            it.setdefault("percent_positive", 60.0)
+            it.setdefault("percent_neutral", 20.0)
+            it.setdefault("percent_negative", 20.0)
         out.append(it)
     return out
 
@@ -667,16 +694,40 @@ def _render_field_editor(item: Dict[str, Any], idx: int, all_comment_names: List
             item["precision"] = int(cols[3].number_input("Precision", min_value=0, max_value=6, value=int(item.get("precision", 2)), key=f"prec_{uid}"))
 
         if ftype == "Comment (Sentiment)":
+            # keep legacy sentiment override
             item["sentiment"] = st.selectbox("Sentiment (override)", options=["Random", "Positive", "Neutral", "Negative"], index=["Random","Positive","Neutral","Negative"].index(item.get("sentiment","Random")), key=f"sent_{uid}")
-            st.markdown("**Trend over time**")
-            item["trend_enabled"] = bool(st.checkbox("Enable trend", value=bool(item.get("trend_enabled", False)), key=f"trend_enabled_{uid}"))
-            if item["trend_enabled"]:
-                item["timeline_source"] = st.selectbox("Timeline source", options=["Global timeline", "Date field"], index=0 if item.get("timeline_source","Global timeline")=="Global timeline" else 1, key=f"tl_src_{uid}")
-                if item["timeline_source"] == "Date field":
-                    item["timeline_date_field"] = st.text_input("Date field name", value=item.get("timeline_date_field",""), key=f"df_ref_{uid}")
-                item["trend_type"] = st.selectbox("Trend type", options=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"], index=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"].index(item.get("trend_type","Increasing Positive")), key=f"trend_type_{uid}")
-                item["trend_strength"] = float(st.slider("Trend strength", 0.0, 1.0, float(item.get("trend_strength", 0.5)), step=0.01, key=f"trend_strength_{uid}"))
-                item["base_preset"] = st.selectbox("Base distribution", options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], index=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"].index(item.get("base_preset","Balanced")), key=f"base_preset_{uid}")
+
+            st.markdown("**Base distribution**")
+            # Option: use explicit percentages
+            item["use_percentages"] = st.checkbox("Use explicit percentages (Good / Neutral / Bad)?", value=bool(item.get("use_percentages", False)), key=f"use_pct_{uid}")
+            if item["use_percentages"]:
+                cols_pct = st.columns([1,1,1])
+                # Accept 0-100 values; we'll normalize internally
+                item["percent_positive"] = float(cols_pct[0].number_input("Good (%)", min_value=0.0, max_value=100.0, value=float(item.get("percent_positive", 60.0)), step=1.0, key=f"pct_pos_{uid}"))
+                item["percent_neutral"] = float(cols_pct[1].number_input("Neutral (%)", min_value=0.0, max_value=100.0, value=float(item.get("percent_neutral", 20.0)), step=1.0, key=f"pct_neu_{uid}"))
+                item["percent_negative"] = float(cols_pct[2].number_input("Bad (%)", min_value=0.0, max_value=100.0, value=float(item.get("percent_negative", 20.0)), step=1.0, key=f"pct_neg_{uid}"))
+                st.caption("Percentages will be normalized if they don't sum to 100.")
+            else:
+                item["trend_enabled"] = bool(st.checkbox("Enable trend", value=bool(item.get("trend_enabled", False)), key=f"trend_enabled_{uid}"))
+                if item["trend_enabled"]:
+                    item["timeline_source"] = st.selectbox("Timeline source", options=["Global timeline", "Date field"], index=0 if item.get("timeline_source","Global timeline")=="Global timeline" else 1, key=f"tl_src_{uid}")
+                    if item["timeline_source"] == "Date field":
+                        item["timeline_date_field"] = st.text_input("Date field name", value=item.get("timeline_date_field",""), key=f"df_ref_{uid}")
+                    item["trend_type"] = st.selectbox("Trend type", options=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"], index=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"].index(item.get("trend_type","Increasing Positive")), key=f"trend_type_{uid}")
+                    item["trend_strength"] = float(st.slider("Trend strength", 0.0, 1.0, float(item.get("trend_strength", 0.5)), step=0.01, key=f"trend_strength_{uid}"))
+                    item["base_preset"] = st.selectbox("Base distribution", options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], index=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"].index(item.get("base_preset","Balanced")), key=f"base_preset_{uid}")
+
+            # If the user enabled explicit percentages, still allow trend settings (optional)
+            if item.get("use_percentages", False):
+                with st.expander("Trend settings (optional)"):
+                    item["trend_enabled"] = bool(st.checkbox("Enable trend for this comment field?", value=bool(item.get("trend_enabled", False)), key=f"trend_enabled_tr_{uid}"))
+                    if item["trend_enabled"]:
+                        item["timeline_source"] = st.selectbox("Timeline source", options=["Global timeline", "Date field"], index=0 if item.get("timeline_source","Global timeline")=="Global timeline" else 1, key=f"tl_src_tr_{uid}")
+                        if item["timeline_source"] == "Date field":
+                            item["timeline_date_field"] = st.text_input("Date field name", value=item.get("timeline_date_field",""), key=f"df_ref_tr_{uid}")
+                        item["trend_type"] = st.selectbox("Trend type", options=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"], index=["Increasing Positive","Decreasing Positive","Cyclical","Random Fluctuation"].index(item.get("trend_type","Increasing Positive")), key=f"trend_type_tr_{uid}")
+                        item["trend_strength"] = float(st.slider("Trend strength", 0.0, 1.0, float(item.get("trend_strength", 0.5)), step=0.01, key=f"trend_strength_tr_{uid}"))
+                        item["base_preset"] = st.selectbox("Base distribution (fallback)", options=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"], index=["Balanced","Positive-heavy","Neutral-heavy","Negative-heavy"].index(item.get("base_preset","Balanced")), key=f"base_preset_tr_{uid}")
 
         if ftype == "Conditional Range (Based on Comment Sentiment)":
             st.markdown("**Depends on (comment field)**")
@@ -885,32 +936,46 @@ else:
                 sentiment = st.selectbox("Sentiment (override)", options=["Random", "Positive", "Neutral", "Negative"], index=0, key=f"sentiment_{i}")
                 field_def["sentiment"] = sentiment
 
-                st.markdown("**Trend over time**")
-                trend_enabled = st.checkbox("Enable trend for this comment field?", value=False, key=f"trend_enabled_{i}")
-                field_def["trend_enabled"] = trend_enabled
+                # New percentage option defaults
+                field_def.setdefault("use_percentages", False)
+                field_def.setdefault("percent_positive", 60.0)
+                field_def.setdefault("percent_neutral", 20.0)
+                field_def.setdefault("percent_negative", 20.0)
 
-                if trend_enabled:
-                    tl_source = st.selectbox("Timeline source", options=["Global timeline", "Date field"], key=f"tl_src_{i}")
-                    field_def["timeline_source"] = tl_source
-                    if tl_source == "Date field":
-                        date_field_options = [f["name"] for f in schema if f.get("type") in ["Date", "Date (Sequential)"]]
-                        if date_field_options:
-                            chosen_df = st.selectbox("Date field to use as timeline", options=date_field_options + ["(enter manually)"], key=f"df_choice_{i}")
-                            if chosen_df == "(enter manually)":
-                                date_field_ref = st.text_input("Enter date field name", value="", key=f"df_manual_{i}")
+                st.markdown("**Base distribution**")
+                use_pct = st.checkbox("Use explicit percentages (Good / Neutral / Bad)?", value=field_def["use_percentages"], key=f"use_pct_m_{i}")
+                field_def["use_percentages"] = use_pct
+                if use_pct:
+                    colp = st.columns([1,1,1])
+                    field_def["percent_positive"] = float(colp[0].number_input("Good (%)", min_value=0.0, max_value=100.0, value=float(field_def["percent_positive"]), step=1.0, key=f"pct_pos_m_{i}"))
+                    field_def["percent_neutral"]  = float(colp[1].number_input("Neutral (%)", min_value=0.0, max_value=100.0, value=float(field_def["percent_neutral"]), step=1.0, key=f"pct_neu_m_{i}"))
+                    field_def["percent_negative"] = float(colp[2].number_input("Bad (%)", min_value=0.0, max_value=100.0, value=float(field_def["percent_negative"]), step=1.0, key=f"pct_neg_m_{i}"))
+                    st.caption("Percentages will be normalized if they don't sum to 100.")
+                else:
+                    field_def["trend_enabled"] = st.checkbox("Enable trend for this comment field?", value=False, key=f"trend_enabled_m_{i}")
+                    if field_def["trend_enabled"]:
+                        tl_source = st.selectbox("Timeline source", options=["Global timeline", "Date field"], key=f"tl_src_m_{i}")
+                        field_def["timeline_source"] = tl_source
+                        if tl_source == "Date field":
+                            date_field_options = [f["name"] for f in schema if f.get("type") in ["Date", "Date (Sequential)"]]
+                            if date_field_options:
+                                chosen_df = st.selectbox("Date field to use as timeline", options=date_field_options + ["(enter manually)"], key=f"df_choice_m_{i}")
+                                if chosen_df == "(enter manually)":
+                                    date_field_ref = st.text_input("Enter date field name", value="", key=f"df_manual_m_{i}")
+                                else:
+                                    date_field_ref = chosen_df
                             else:
-                                date_field_ref = chosen_df
-                        else:
-                            date_field_ref = st.text_input("Enter date field name to use for timeline", value="", key=f"df_manual_{i}")
-                        field_def["timeline_date_field"] = date_field_ref
+                                date_field_ref = st.text_input("Enter date field name to use for timeline", value="", key=f"df_manual_m_{i}")
+                            field_def["timeline_date_field"] = date_field_ref
 
-                    trend_type = st.selectbox("Trend type", options=["Increasing Positive", "Decreasing Positive", "Cyclical", "Random Fluctuation"], key=f"trend_type_{i}")
-                    trend_strength = st.slider("Trend strength", 0.0, 1.0, 0.5, step=0.01, key=f"trend_strength_{i}")
-                    field_def["trend_type"] = trend_type
-                    field_def["trend_strength"] = float(trend_strength)
+                        trend_type = st.selectbox("Trend type", options=["Increasing Positive", "Decreasing Positive", "Cyclical", "Random Fluctuation"], key=f"trend_type_m_{i}")
+                        trend_strength = st.slider("Trend strength", 0.0, 1.0, 0.5, step=0.01, key=f"trend_strength_m_{i}")
+                        field_def["trend_type"] = trend_type
+                        field_def["trend_strength"] = float(trend_strength)
 
-                    base_preset = st.selectbox("Base distribution", options=["Balanced", "Positive-heavy", "Neutral-heavy", "Negative-heavy"], key=f"base_preset_{i}")
-                    field_def["base_preset"] = base_preset
+                        base_preset = st.selectbox("Base distribution", options=["Balanced", "Positive-heavy", "Neutral-heavy", "Negative-heavy"], key=f"base_preset_m_{i}")
+                        field_def["base_preset"] = base_preset
+                # end percent/ trend handling
 
             if field_type == "Conditional Range (Based on Comment Sentiment)":
                 comment_field_options = [f["name"] for f in schema if f.get("type") == "Comment (Sentiment)"]
